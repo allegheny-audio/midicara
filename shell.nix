@@ -3,18 +3,21 @@ with (import <nixpkgs> { });
 mkShell {
   buildInputs = [
     (dlib.override { guiSupport = true; })
+    gst_all_1.gstreamer
+    gtk2
+    gtk2.dev
     opencv
     opencv2.dev
-    gst_all_1.gstreamer
+    pkg-config-unwrapped
   ];
   nativeBuildInputs = [
-    cmake
-    pkg-config
-    patchelf
     bzip2
+    cmake
+    patchelf
+    pkg-config
   ];
   shellHook = ''
-    echo '${opencv2.dev}'
+    echo '${pkg-config-unwrapped}'
     if [[ -n $LD_LIBRARY_PATH ]]; then
       LD_LIBRARY_PATH="${opencv.out}/lib:$LD_LIBRARY_PATH"
     else
