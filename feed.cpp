@@ -140,15 +140,15 @@ int main(int argc, char** argv) {
           cout << "[LOG] num_parts()" << endl;
         }
         cv::Mat eyeMaskMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
-        std::vector<cv::Point> eyePoints = {
-          // left eye
+        std::vector<cv::Point> leftEyePoints = {
           cv::Point(shape.part(36).x(), shape.part(36).y()),
           cv::Point(shape.part(37).x(), shape.part(37).y()),
           cv::Point(shape.part(38).x(), shape.part(38).y()),
           cv::Point(shape.part(39).x(), shape.part(39).y()),
           cv::Point(shape.part(40).x(), shape.part(40).y()),
           cv::Point(shape.part(41).x(), shape.part(41).y()),
-          // right eye
+        };
+        std::vector<cv::Point> rightEyePoints = {
           cv::Point(shape.part(42).x(), shape.part(42).y()),
           cv::Point(shape.part(43).x(), shape.part(43).y()),
           cv::Point(shape.part(44).x(), shape.part(44).y()),
@@ -156,28 +156,33 @@ int main(int argc, char** argv) {
           cv::Point(shape.part(46).x(), shape.part(46).y()),
           cv::Point(shape.part(47).x(), shape.part(47).y())
         };
-        cv::fillConvexPoly(eyeMaskMatrix, eyePoints, cv::Scalar(0, 0, 0));
-        cv::Mat kernel = cv::Mat::ones(5, 5, matrix.type());
+        cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
+        cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
+        cv::Mat kernel = cv::Mat::ones(2, 2, matrix.type());
         // use image dilation to expand the borders of the eye regions
         cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
         cv::Mat eyesMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
         // get a cropping of just the eyes using the masking
         cv::bitwise_and(matrix, matrix, eyesMatrix, eyeMaskMatrix);
-        // FIXME: this does not work for debugging because of lacking libraries
-        cv::imshow("testing", eyesMatrix);
+        // turn into dlib::cv_image in order to show it
+        cv_image<unsigned char> eyesImg(eyesMatrix);
+        // { deletable
+        win.clear_overlay();
+        win.set_image(eyesImg);
+        // } deletable
         // NOTE: there are always 68 parts
         for (int i = 0; i < shape.num_parts(); i++) {
           // FIXME: uncomment: cout << "pixel position of part" << i << ": " << shape.part(i) << endl;
         }
-        win.clear_overlay();
+        // FIXME: uncomment win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;
         }
-        win.set_image(baseimg);
+        // FIXME: uncomment win.set_image(baseimg);
         if (isDebug) {
           cout << "[LOG] win.set_image(baseimg)" << endl;
         }
-        win.add_overlay(render_face_detections(shape));
+        // FIXME: uncomment win.add_overlay(render_face_detections(shape));
         if (isDebug) {
           cout << "[LOG] end of while, going back" << endl;
         }
