@@ -158,12 +158,21 @@ int main(int argc, char** argv) {
         };
         cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
         cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
-        cv::Mat kernel = cv::Mat::ones(2, 2, matrix.type());
+        cv::Mat kernel = cv::Mat::ones(5, 5, matrix.type());
         // use image dilation to expand the borders of the eye regions
         cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
         cv::Mat eyesMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
         // get a cropping of just the eyes using the masking
         cv::bitwise_and(matrix, matrix, eyesMatrix, eyeMaskMatrix);
+        // find mean of values in BW eyesMatrix
+        cv::Scalar eyesMatrixMean = cv::mean(eyesMatrix, eyeMaskMatrix);
+        // use threshold value to be a function of eyesMatrixMean in order to make it responsive to lighting changes
+        unsigned char threshold = floor(eyesMatrixMean[0]) - 10;
+        cv::threshold(eyesMatrix, eyesMatrix, threshold, 255, cv::THRESH_BINARY_INV);
+        cv::Mat pupilKernel = cv::Mat::ones(3, 3, matrix.type());
+        cv::erode(eyesMatrix, eyesMatrix, pupilKernel); // shave off imperfections
+        // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
+        // cv::findContours(eyesMatrix, eyesMatrix, 30, 255, cv::THRESH_BINARY_INV);
         // turn into dlib::cv_image in order to show it
         cv_image<unsigned char> eyesImg(eyesMatrix);
         // { deletable
