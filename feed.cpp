@@ -57,6 +57,9 @@
 #include <dlib/gui_widgets.h>
 #include <dlib/image_io.h>
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <math.h>
 
 using namespace dlib;
 using namespace std;
@@ -67,11 +70,149 @@ static const bool isDebug = true;
 static const bool isDebug = false;
 #endif
 
+std::mutex m;
+
+bool noseCalibrationInPosition = false;
+bool noseCalibrationComplete = false;
+bool mouthCalibrationInPosition = false;
+bool mouthCalibrationComplete = false;
+int noseZeroCalibrated[2];
+int noseCurrentPosition[2];
+
 // for debugging purposes: show an opencv matrix on a display window
 void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
   cv_image<unsigned char> myImage(*mat);
   win->clear_overlay();
   win->set_image(myImage);
+}
+
+// stab at seeing if eye tracking was a viable option for getting information. Turns out, it was not. At least, for now.
+void eyeTracking(dlib::image_window* win, cv::Mat* mat, dlib::full_object_detection* shape) {
+  cv::Size matrixSize = mat->size();
+  int matrixType = mat->type();
+  // mask used to block out area where eyes are located
+  cv::Mat eyeMaskMatrix = cv::Mat::zeros(matrixSize, matrixType);
+  std::vector<cv::Point> leftEyePoints = {
+    cv::Point(shape->part(37 - 1).x(), shape->part(37 - 1).y()),
+    cv::Point(shape->part(38 - 1).x(), shape->part(38 - 1).y()),
+    cv::Point(shape->part(39 - 1).x(), shape->part(39 - 1).y()),
+    cv::Point(shape->part(40 - 1).x(), shape->part(40 - 1).y()),
+    cv::Point(shape->part(41 - 1).x(), shape->part(41 - 1).y()),
+    cv::Point(shape->part(42 - 1).x(), shape->part(42 - 1).y()),
+  };
+  std::vector<cv::Point> rightEyePoints = {
+    cv::Point(shape->part(43 - 1).x(), shape->part(43 - 1).y()),
+    cv::Point(shape->part(44 - 1).x(), shape->part(44 - 1).y()),
+    cv::Point(shape->part(45 - 1).x(), shape->part(45 - 1).y()),
+    cv::Point(shape->part(46 - 1).x(), shape->part(46 - 1).y()),
+    cv::Point(shape->part(47 - 1).x(), shape->part(47 - 1).y()),
+    cv::Point(shape->part(48 - 1).x(), shape->part(48 - 1).y())
+  };
+  // use points from dlib's detection to fill in black polygons where eyes are
+  cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
+  cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
+  // 'kernel' used for erosion/dilation algorithm
+  cv::Mat kernel = cv::Mat::ones(5, 5, matrixType);
+  // use image dilation to expand the borders of the eye regions
+  cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
+
+  // used to overlay at the end to allow opencv to find contours better within the eye shapes
+  cv::Mat eyeBoundaryMatrix = eyeMaskMatrix.clone();
+  cv::Mat eyeBoundaryInnerMatrix = eyeMaskMatrix.clone();
+  cv::erode(eyeBoundaryInnerMatrix, eyeBoundaryInnerMatrix, cv::Mat());
+  cv::bitwise_xor(eyeBoundaryMatrix, eyeBoundaryInnerMatrix, eyeBoundaryMatrix, eyeMaskMatrix);
+  cv::bitwise_not(eyeBoundaryMatrix, eyeBoundaryMatrix);
+
+  // matrix of actual eyes in image
+  cv::Mat eyesMatrix = cv::Mat::zeros(matrixSize, matrixType);
+  // get a cropping of just the eyes using the masking and output it to eyeMatrix
+  cv::bitwise_and(*mat, *mat, eyesMatrix, eyeMaskMatrix);
+  // find mean of values in BW eyesMatrix
+  cv::Scalar eyesMatrixMean = cv::mean(eyesMatrix, eyeMaskMatrix);
+  // use threshold value to be a function of eyesMatrixMean in order to make it responsive to lighting changes
+  unsigned char threshold = floor(eyesMatrixMean[0]) - 10;
+  cv::threshold(eyesMatrix, eyesMatrix, threshold, 255, cv::THRESH_BINARY_INV);
+  cv::Mat pupilKernel = cv::Mat::ones(3, 3, matrixType);
+  cv::erode(eyesMatrix, eyesMatrix, pupilKernel); // shave off imperfections
+  // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
+
+  cv::bitwise_and(eyeBoundaryMatrix, eyesMatrix, eyesMatrix);
+  // FIXME: cv::findContours(eyesMatrix, contours, 30, 255, cv::THRESH_BINARY_INV);
+  // { deletable
+  opencvShowGrayscaleMatrix(win, &eyesMatrix);
+  // } deletable
+}
+
+void calibration() {
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Nose Calibration        #" << endl;
+  cout << "#        ----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Please put your nose in the   #" << endl;
+  cout << "#  center of the screen in       #" << endl;
+  cout << "#  order to calibrate the center #" << endl;
+  cout << "#  of your pitch wheel.          #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Saving position...            #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  m.lock();
+  noseCalibrationInPosition = true;
+  m.unlock();
+  while (true) {
+    m.lock();
+    if (noseCalibrationComplete) {
+      cout << "##################################" << endl;
+      cout << "#                                #" << endl;
+      cout << "#            Done!               #" << endl;
+      cout << "#                                #" << endl;
+      cout << "##################################" << endl;
+      m.unlock();
+      break;
+    }
+    m.unlock();
+  }
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Mouth Calibration        #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Please close your mouth       #" << endl;
+  cout << "#  in relaxed manner.            #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Saving position...       #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  m.lock();
+  noseCalibrationInPosition = true;
+  m.unlock();
+  while (true) {
+    m.lock();
+    if (mouthCalibrationComplete) {
+      cout << "##################################" << endl;
+      cout << "#                                #" << endl;
+      cout << "#            Done!               #" << endl;
+      cout << "#                                #" << endl;
+      cout << "##################################" << endl;
+      m.unlock();
+      break;
+    }
+    m.unlock();
+  }
 }
 
 int main(int argc, char** argv) {  
@@ -106,6 +247,8 @@ int main(int argc, char** argv) {
 
     image_window win;
     std::vector<rectangle> faces;
+    // FIXME: eventually start midi process as a side
+    std::thread thread_calibration(calibration);
     while (!win.is_closed()) {
       if (isDebug) {
         cout << "[LOG] while entered" << endl;
@@ -125,6 +268,7 @@ int main(int argc, char** argv) {
       // while using baseimg.
       // set color to grayscale
       cv::cvtColor(matrix, matrix, cv::COLOR_BGR2GRAY);
+      cv::flip(matrix, matrix, 1);
       // use unsigned char instead of `bgr_pixel` as pixel type,
       // because we are working with grayscale magnitude
       cv_image<unsigned char> baseimg(matrix);
@@ -146,70 +290,51 @@ int main(int argc, char** argv) {
         if (isDebug) {
           cout << "[LOG] num_parts()" << endl;
         }
-
-
-        // mask used to block out area where eyes are located
-        cv::Mat eyeMaskMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
-        std::vector<cv::Point> leftEyePoints = {
-          cv::Point(shape.part(36).x(), shape.part(36).y()),
-          cv::Point(shape.part(37).x(), shape.part(37).y()),
-          cv::Point(shape.part(38).x(), shape.part(38).y()),
-          cv::Point(shape.part(39).x(), shape.part(39).y()),
-          cv::Point(shape.part(40).x(), shape.part(40).y()),
-          cv::Point(shape.part(41).x(), shape.part(41).y()),
-        };
-        std::vector<cv::Point> rightEyePoints = {
-          cv::Point(shape.part(42).x(), shape.part(42).y()),
-          cv::Point(shape.part(43).x(), shape.part(43).y()),
-          cv::Point(shape.part(44).x(), shape.part(44).y()),
-          cv::Point(shape.part(45).x(), shape.part(45).y()),
-          cv::Point(shape.part(46).x(), shape.part(46).y()),
-          cv::Point(shape.part(47).x(), shape.part(47).y())
-        };
-        // use points from dlib's detection to fill in black polygons where eyes are
-        cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
-        cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
-        // 'kernel' used for erosion/dilation algorithm
-        cv::Mat kernel = cv::Mat::ones(5, 5, matrix.type());
-        // use image dilation to expand the borders of the eye regions
-        cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
-
-        // used to overlay at the end to allow opencv to find contours better within the eye shapes
-        cv::Mat eyeBoundaryMatrix = eyeMaskMatrix.clone();
-        cv::Mat eyeBoundaryInnerMatrix = eyeMaskMatrix.clone();
-        cv::erode(eyeBoundaryInnerMatrix, eyeBoundaryInnerMatrix, cv::Mat());
-        cv::bitwise_xor(eyeBoundaryMatrix, eyeBoundaryInnerMatrix, eyeBoundaryMatrix, eyeMaskMatrix);
-        cv::bitwise_not(eyeBoundaryMatrix, eyeBoundaryMatrix);
-
-        // matrix of actual eyes in image
-        cv::Mat eyesMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
-        // get a cropping of just the eyes using the masking and output it to eyeMatrix
-        cv::bitwise_and(matrix, matrix, eyesMatrix, eyeMaskMatrix);
-        // find mean of values in BW eyesMatrix
-        cv::Scalar eyesMatrixMean = cv::mean(eyesMatrix, eyeMaskMatrix);
-        // use threshold value to be a function of eyesMatrixMean in order to make it responsive to lighting changes
-        unsigned char threshold = floor(eyesMatrixMean[0]) - 10;
-        cv::threshold(eyesMatrix, eyesMatrix, threshold, 255, cv::THRESH_BINARY_INV);
-        cv::Mat pupilKernel = cv::Mat::ones(3, 3, matrix.type());
-        cv::erode(eyesMatrix, eyesMatrix, pupilKernel); // shave off imperfections
-        // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
-
-        cv::bitwise_and(eyeBoundaryMatrix, eyesMatrix, eyesMatrix);
-        // FIXME: cv::findContours(eyesMatrix, contours, 30, 255, cv::THRESH_BINARY_INV);
-        // { deletable
-        // opencvShowGrayscaleMatrix(&win, &eyesMatrix);
-        // } deletable
         
+        // NOTE: for testing only
+        if (false) {
+          eyeTracking(&win, &matrix, &shape);
+        }
+
+        // FIXME: this needs to be extracted from the main process
+        if (m.try_lock()) {
+          noseCurrentPosition[0] = shape.part(34-1).x();
+          noseCurrentPosition[1] = shape.part(34-1).y();
+          if (noseCalibrationInPosition && !noseCalibrationComplete) {
+            noseZeroCalibrated[0] = shape.part(34-1).x();
+            noseZeroCalibrated[1] = shape.part(34-1).y();
+            noseCalibrationComplete = true;
+          }
+          if (noseCalibrationComplete) {
+            int noseDeltaX = (noseCurrentPosition[0] - noseZeroCalibrated[0]);
+            int noseDeltaY = (noseCurrentPosition[1] - noseZeroCalibrated[1]);
+            // noseDeltaY cannot be 0, so we will by default move it over by 1 if it is.
+            if (noseDeltaY == 0) {
+              noseDeltaY = 1;
+            }
+            cout << "noseCurrentPosition: " << noseCurrentPosition[0] << " " << noseCurrentPosition[1] << endl;
+            cout << "noseZeroCalibrated: " << noseZeroCalibrated[0] << " " << noseZeroCalibrated[1] << endl;
+            cout << "MAGNITUDE: " << round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY)) << endl;
+            double atanRes = atan2(noseDeltaY, noseDeltaX);
+            atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
+            cout << "ATAN RES: " << atanRes << endl;
+            cout << "SCALE DEGREE: " << round((atanRes) / 6.28 * 12.0) << endl;
+            cv::line(matrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Scalar(0, 0, 0), 1);
+          }
+          m.unlock();
+        }
+        opencvShowGrayscaleMatrix(&win, &matrix);
+
         // NOTE: there are always 68 parts
-        // FIXME: uncomment: win.clear_overlay();
+        // win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;
         }
-        // FIXME: uncomment: win.set_image(baseimg);
+        // win.set_image(baseimg);
         if (isDebug) {
           cout << "[LOG] win.set_image(baseimg)" << endl;
         }
-        // FIXME: uncomment: win.add_overlay(render_face_detections(shape));
+        // win.add_overlay(render_face_detections(shape));
         if (isDebug) {
           cout << "[LOG] end of while, going back" << endl;
         }
