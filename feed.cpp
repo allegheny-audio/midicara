@@ -74,10 +74,22 @@ std::mutex m;
 
 bool noseCalibrationInPosition = false;
 bool noseCalibrationComplete = false;
-bool mouthCalibrationInPosition = false;
-bool mouthCalibrationComplete = false;
+
+bool mouthCalibrationClosedInPosition = false;
+bool mouthCalibrationClosedComplete = false;
+bool mouthCalibrationOpenUpDownInPosition = false;
+bool mouthCalibrationOpenUpDownComplete = false;
+bool mouthCalibrationOpenRightLeftInPosition = false;
+bool mouthCalibrationOpenRightLeftComplete = false;
+
 int noseZeroCalibrated[2];
 int noseCurrentPosition[2];
+int mouthOuterLipUpDownCurrentDistance;
+int mouthOuterLipRightLeftCurrentDistance;
+int mouthOuterLipUpDownClosedDistanceCalibrated;
+int mouthOuterLipRightLeftClosedDistanceCalibrated;
+int mouthOuterLipUpDownOpenDistanceCalibrated;
+int mouthOuterLipRightLeftOpenDistanceCalibrated;
 
 // for debugging purposes: show an opencv matrix on a display window
 void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
@@ -183,6 +195,7 @@ void calibration() {
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
   cout << "#       Mouth Calibration        #" << endl;
+  cout << "#          Step 1 of 3           #" << endl;
   cout << "#       -----------------        #" << endl;
   cout << "#                                #" << endl;
   cout << "#  Please close your mouth       #" << endl;
@@ -198,11 +211,81 @@ void calibration() {
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
   m.lock();
-  noseCalibrationInPosition = true;
+  mouthCalibrationClosedInPosition = true;
   m.unlock();
   while (true) {
     m.lock();
-    if (mouthCalibrationComplete) {
+    if (mouthCalibrationClosedComplete) {
+      cout << "##################################" << endl;
+      cout << "#                                #" << endl;
+      cout << "#            Done!               #" << endl;
+      cout << "#                                #" << endl;
+      cout << "##################################" << endl;
+      m.unlock();
+      break;
+    }
+    m.unlock();
+  }
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Mouth Calibration        #" << endl;
+  cout << "#          Step 2 of 3           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Please open your mouth        #" << endl;
+  cout << "#  as if you were yawning.       #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Saving position...       #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  m.lock();
+  mouthCalibrationOpenUpDownInPosition = true;
+  m.unlock();
+  while (true) {
+    m.lock();
+    if (mouthCalibrationOpenUpDownComplete) {
+      cout << "##################################" << endl;
+      cout << "#                                #" << endl;
+      cout << "#            Done!               #" << endl;
+      cout << "#                                #" << endl;
+      cout << "##################################" << endl;
+      m.unlock();
+      break;
+    }
+    m.unlock();
+  }
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Mouth Calibration        #" << endl;
+  cout << "#          Step 3 of 3           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Please smile widely           #" << endl;
+  cout << "#  without opening your mouth.   #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#       Saving position...       #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  m.lock();
+  mouthCalibrationOpenRightLeftInPosition = true;
+  m.unlock();
+  while (true) {
+    m.lock();
+    if (mouthCalibrationOpenRightLeftComplete) {
       cout << "##################################" << endl;
       cout << "#                                #" << endl;
       cout << "#            Done!               #" << endl;
@@ -301,8 +384,8 @@ int main(int argc, char** argv) {
           noseCurrentPosition[0] = shape.part(34-1).x();
           noseCurrentPosition[1] = shape.part(34-1).y();
           if (noseCalibrationInPosition && !noseCalibrationComplete) {
-            noseZeroCalibrated[0] = shape.part(34-1).x();
-            noseZeroCalibrated[1] = shape.part(34-1).y();
+            noseZeroCalibrated[0] = noseCurrentPosition[0];
+            noseZeroCalibrated[1] = noseCurrentPosition[1];
             noseCalibrationComplete = true;
           }
           if (noseCalibrationComplete) {
@@ -312,29 +395,54 @@ int main(int argc, char** argv) {
             if (noseDeltaY == 0) {
               noseDeltaY = 1;
             }
-            cout << "noseCurrentPosition: " << noseCurrentPosition[0] << " " << noseCurrentPosition[1] << endl;
-            cout << "noseZeroCalibrated: " << noseZeroCalibrated[0] << " " << noseZeroCalibrated[1] << endl;
-            cout << "MAGNITUDE: " << round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY)) << endl;
             double atanRes = atan2(noseDeltaY, noseDeltaX);
+            double magnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
             atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
-            cout << "ATAN RES: " << atanRes << endl;
-            cout << "SCALE DEGREE: " << round((atanRes) / 6.28 * 12.0) << endl;
+            double scaleDegree = round((atanRes) / 6.28 * 12.0);
             cv::line(matrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Scalar(0, 0, 0), 1);
           }
           m.unlock();
         }
-        opencvShowGrayscaleMatrix(&win, &matrix);
 
-        // NOTE: there are always 68 parts
-        // win.clear_overlay();
+        // FIXME: this needs to be extracted from the main process
+        if (m.try_lock()) {
+          mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
+          mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
+          if (mouthCalibrationClosedInPosition && !mouthCalibrationClosedComplete) {
+            mouthOuterLipUpDownClosedDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
+            mouthOuterLipRightLeftClosedDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
+            mouthCalibrationClosedComplete = true;
+          }
+          if (mouthCalibrationClosedComplete) {
+            // do stuff with mouth dimensions
+          }
+          if (mouthCalibrationOpenUpDownInPosition && !mouthCalibrationOpenUpDownComplete) {
+            mouthOuterLipUpDownOpenDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
+            mouthCalibrationOpenUpDownComplete = true;
+          }
+          if (mouthCalibrationOpenUpDownComplete) {
+            // do stuff with mouth dimensions
+          }
+          if (mouthCalibrationOpenRightLeftInPosition && !mouthCalibrationOpenRightLeftComplete) {
+            mouthOuterLipRightLeftOpenDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
+            mouthCalibrationOpenRightLeftComplete = true;
+          }
+          if (mouthCalibrationOpenRightLeftComplete) {
+            // do stuff with mouth dimensions
+          }
+          m.unlock();
+        }
+        // opencvShowGrayscaleMatrix(&win, &matrix);
+
+        win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;
         }
-        // win.set_image(baseimg);
+        win.set_image(baseimg);
         if (isDebug) {
           cout << "[LOG] win.set_image(baseimg)" << endl;
         }
-        // win.add_overlay(render_face_detections(shape));
+        win.add_overlay(render_face_detections(shape));
         if (isDebug) {
           cout << "[LOG] end of while, going back" << endl;
         }
