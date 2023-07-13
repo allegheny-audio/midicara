@@ -67,6 +67,13 @@ static const bool isDebug = true;
 static const bool isDebug = false;
 #endif
 
+// for debugging purposes: show an opencv matrix on a display window
+void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
+  cv_image<unsigned char> myImage(*mat);
+  win->clear_overlay();
+  win->set_image(myImage);
+}
+
 int main(int argc, char** argv) {  
   try {
     cv::VideoCapture cap(0);
@@ -139,6 +146,9 @@ int main(int argc, char** argv) {
         if (isDebug) {
           cout << "[LOG] num_parts()" << endl;
         }
+
+
+        // mask used to block out area where eyes are located
         cv::Mat eyeMaskMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
         std::vector<cv::Point> leftEyePoints = {
           cv::Point(shape.part(36).x(), shape.part(36).y()),
@@ -156,13 +166,24 @@ int main(int argc, char** argv) {
           cv::Point(shape.part(46).x(), shape.part(46).y()),
           cv::Point(shape.part(47).x(), shape.part(47).y())
         };
+        // use points from dlib's detection to fill in black polygons where eyes are
         cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
         cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
+        // 'kernel' used for erosion/dilation algorithm
         cv::Mat kernel = cv::Mat::ones(5, 5, matrix.type());
         // use image dilation to expand the borders of the eye regions
         cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
+
+        // used to overlay at the end to allow opencv to find contours better within the eye shapes
+        cv::Mat eyeBoundaryMatrix = eyeMaskMatrix.clone();
+        cv::Mat eyeBoundaryInnerMatrix = eyeMaskMatrix.clone();
+        cv::erode(eyeBoundaryInnerMatrix, eyeBoundaryInnerMatrix, cv::Mat());
+        cv::bitwise_xor(eyeBoundaryMatrix, eyeBoundaryInnerMatrix, eyeBoundaryMatrix, eyeMaskMatrix);
+        cv::bitwise_not(eyeBoundaryMatrix, eyeBoundaryMatrix);
+
+        // matrix of actual eyes in image
         cv::Mat eyesMatrix = cv::Mat::zeros(matrix.size(), matrix.type());
-        // get a cropping of just the eyes using the masking
+        // get a cropping of just the eyes using the masking and output it to eyeMatrix
         cv::bitwise_and(matrix, matrix, eyesMatrix, eyeMaskMatrix);
         // find mean of values in BW eyesMatrix
         cv::Scalar eyesMatrixMean = cv::mean(eyesMatrix, eyeMaskMatrix);
@@ -172,26 +193,23 @@ int main(int argc, char** argv) {
         cv::Mat pupilKernel = cv::Mat::ones(3, 3, matrix.type());
         cv::erode(eyesMatrix, eyesMatrix, pupilKernel); // shave off imperfections
         // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
-        // cv::findContours(eyesMatrix, eyesMatrix, 30, 255, cv::THRESH_BINARY_INV);
-        // turn into dlib::cv_image in order to show it
-        cv_image<unsigned char> eyesImg(eyesMatrix);
+
+        cv::bitwise_and(eyeBoundaryMatrix, eyesMatrix, eyesMatrix);
+        // FIXME: cv::findContours(eyesMatrix, contours, 30, 255, cv::THRESH_BINARY_INV);
         // { deletable
-        win.clear_overlay();
-        win.set_image(eyesImg);
+        // opencvShowGrayscaleMatrix(&win, &eyesMatrix);
         // } deletable
+        
         // NOTE: there are always 68 parts
-        for (int i = 0; i < shape.num_parts(); i++) {
-          // FIXME: uncomment: cout << "pixel position of part" << i << ": " << shape.part(i) << endl;
-        }
-        // FIXME: uncomment win.clear_overlay();
+        // FIXME: uncomment: win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;
         }
-        // FIXME: uncomment win.set_image(baseimg);
+        // FIXME: uncomment: win.set_image(baseimg);
         if (isDebug) {
           cout << "[LOG] win.set_image(baseimg)" << endl;
         }
-        // FIXME: uncomment win.add_overlay(render_face_detections(shape));
+        // FIXME: uncomment: win.add_overlay(render_face_detections(shape));
         if (isDebug) {
           cout << "[LOG] end of while, going back" << endl;
         }
