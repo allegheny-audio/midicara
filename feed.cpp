@@ -1,53 +1,3 @@
-// The contents of this file are in the public domain. See LICENSE_FOR_EXAMPLE_PROGRAMS.txt
-/*
-
-  This example program shows how to find frontal human faces in an image and
-  estimate their pose.  The pose takes the form of 68 landmarks.  These are
-  points on the face such as the corners of the mouth, along the eyebrows, on
-  the eyes, and so forth.  
-  
-
-
-  The face detector we use is made using the classic Histogram of Oriented
-  Gradients (HOG) feature combined with a linear classifier, an image pyramid,
-  and sliding window detection scheme.  The pose estimator was created by
-  using dlib's implementation of the paper:
-     One Millisecond Face Alignment with an Ensemble of Regression Trees by
-     Vahid Kazemi and Josephine Sullivan, CVPR 2014
-  and was trained on the iBUG 300-W face landmark dataset (see
-  https://ibug.doc.ic.ac.uk/resources/facial-point-annotations/):  
-     C. Sagonas, E. Antonakos, G, Tzimiropoulos, S. Zafeiriou, M. Pantic. 
-     300 faces In-the-wild challenge: Database and results. 
-     Image and Vision Computing (IMAVIS), Special Issue on Facial Landmark Localisation "In-The-Wild". 2016.
-  You can get the trained model file from:
-  http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2.
-  Note that the license for the iBUG 300-W dataset excludes commercial use.
-  So you should contact Imperial College London to find out if it's OK for
-  you to use this model file in a commercial product.
-
-
-  Also, note that you can train your own models using dlib's machine learning
-  tools.  See train_shape_predictor_ex.cpp to see an example.
-
-  
-
-
-  Finally, note that the face detector is fastest when compiled with at least
-  SSE2 instructions enabled.  So if you are using a PC with an Intel or AMD
-  chip then you should enable at least SSE2 instructions.  If you are using
-  cmake to compile this program you can enable them by using one of the
-  following commands when you create the build project:
-    cmake path_to_dlib_root/examples -DUSE_SSE2_INSTRUCTIONS=ON
-    cmake path_to_dlib_root/examples -DUSE_SSE4_INSTRUCTIONS=ON
-    cmake path_to_dlib_root/examples -DUSE_AVX_INSTRUCTIONS=ON
-  This will set the appropriate compiler options for GCC, clang, Visual
-  Studio, or the Intel compiler.  If you are using another compiler then you
-  need to consult your compiler's manual to determine how to enable these
-  instructions.  Note that AVX is the fastest but requires a CPU from at least
-  2011.  SSE4 is the next fastest and is supported by most current machines.  
-*/
-
-
 #include <dlib/opencv.h>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -84,14 +34,20 @@ bool mouthCalibrationOpenUpDownComplete = false;
 bool mouthCalibrationOpenRightLeftInPosition = false;
 bool mouthCalibrationOpenRightLeftComplete = false;
 
-int noseZeroCalibrated[2];
 int noseCurrentPosition[2];
+int noseZeroCalibrated[2];
 int mouthOuterLipUpDownCurrentDistance;
 int mouthOuterLipRightLeftCurrentDistance;
+int mouthInnerLipUpDownCurrentDistance;
+int mouthInnerLipRightLeftCurrentDistance;
 int mouthOuterLipUpDownClosedDistanceCalibrated;
 int mouthOuterLipRightLeftClosedDistanceCalibrated;
+int mouthInnerLipUpDownClosedDistanceCalibrated;
+int mouthInnerLipRightLeftClosedDistanceCalibrated;
 int mouthOuterLipUpDownOpenDistanceCalibrated;
+int mouthInnerLipUpDownOpenDistanceCalibrated;
 int mouthOuterLipRightLeftOpenDistanceCalibrated;
+int mouthInnerLipRightLeftOpenDistanceCalibrated;
 
 // for debugging purposes: show an opencv matrix on a display window
 void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
@@ -187,14 +143,9 @@ void interpretFacialData() {
 
     m.lock();
     // do stuff with mouth dimensions
-    // int mouthOuterLipUpDownCurrentDistance;
-    // int mouthOuterLipRightLeftCurrentDistance;
-    // int mouthOuterLipUpDownClosedDistanceCalibrated;
-    // int mouthOuterLipRightLeftClosedDistanceCalibrated;
-    // int mouthOuterLipUpDownOpenDistanceCalibrated;
-    // int mouthOuterLipRightLeftOpenDistanceCalibrated;
     if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
-      cout << "mouth open " << ((float)(mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated) / (mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated)) << endl;
+      cout << "mouth open " <<
+        ((float)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2) / ((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)) << endl;
     } else {
       cout << "mouth closed" << endl;
     }
@@ -203,6 +154,24 @@ void interpretFacialData() {
 }
 
 void calibration() {
+  int N = 100;
+  int measurements[N];
+  int acc;
+  // calc average of live measured value
+  auto calcAverage = [](int* readValue, int* assignValue, int iterations) {
+    int measurements[iterations];
+    int acc = 0;
+    for (int i = 0; i < iterations; i++) {
+      m.lock();
+      measurements[i] = *readValue;
+      m.unlock();
+      std::this_thread::sleep_for(3ms);
+    }
+    for (int i = 0; i < iterations; i++) {
+      acc += measurements[i];
+    }
+    *assignValue = acc / iterations;
+  };
   // wait for facial recog to set up before running
   while (true) {
     m.lock();
@@ -257,25 +226,11 @@ void calibration() {
   cout << "##################################" << endl;
   getchar();
 
-  /*
-  int N = 100;
-  int measurements[N];
-  for (int i = 0; i < N; i ++) {
-    m.lock();
-    measurements[i] = mouthOuterLipUpDownCurrentDistance;
-    m.unlock();
-  }
-  // std::accumulate
-  mouthOuterLipUpDownClosedDistanceCalibrated = 
-  for (int i = 0; i < N; i ++) {
-    m.lock();
-    measurements[i] = mouthOuterLipRightLeftCurrentDistance;
-    m.unlock();
-  }
-  */
+  calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
+  calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
+  calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownClosedDistanceCalibrated, 100);
+  calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftClosedDistanceCalibrated, 100);
   m.lock();
-  mouthOuterLipUpDownClosedDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
-  mouthOuterLipRightLeftClosedDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
   mouthCalibrationClosedComplete = true;
   m.unlock();
 
@@ -299,8 +254,9 @@ void calibration() {
   cout << "##################################" << endl;
   getchar();
 
+  calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
+  calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownOpenDistanceCalibrated, 100);
   m.lock();
-  mouthOuterLipUpDownOpenDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
   mouthCalibrationOpenUpDownComplete = true;
   m.unlock();
 
@@ -324,8 +280,9 @@ void calibration() {
   cout << "##################################" << endl;
   getchar();
 
+  calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
+  calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftOpenDistanceCalibrated, 100);
   m.lock();
-  mouthOuterLipRightLeftOpenDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
   mouthCalibrationOpenRightLeftComplete = true;
   m.unlock();
 
