@@ -60,6 +60,7 @@
 #include <thread>
 #include <mutex>
 #include <math.h>
+#include <libremidi/libremidi.hpp>
 
 using namespace dlib;
 using namespace std;
@@ -433,6 +434,17 @@ int main(int argc, char** argv) {
           m.unlock();
         }
         // opencvShowGrayscaleMatrix(&win, &matrix);
+        
+        // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
+        libremidi::midi_out midi;
+        midi.open_virtual_port();
+        while (true) {
+          midi.send_message(libremidi::message::note_on(1, 48, 127));
+          std::this_thread::sleep_for(1000ms);
+          midi.send_message(libremidi::message::note_off(1, 48, 127));
+          cout << "message apparently sent." << endl;
+          cout << "Port open status: " << (midi.is_port_open() ? "opened" : "unopened" ) << endl;;
+        }
 
         win.clear_overlay();
         if (isDebug) {

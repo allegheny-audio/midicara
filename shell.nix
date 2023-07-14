@@ -1,5 +1,20 @@
 with (import <nixpkgs> { });
 
+let
+  libremidi = stdenv.mkDerivation {
+    name = "libremidi";
+    version = "3.0";
+    src = fetchgit {
+      url = "https://github.com/jcelerier/libremidi";
+      rev = "v3.0";
+      sha256 = "aO83a0DmzwjYXDlPIsn136EkDF0406HadTXPoGuVF6I="; # https://dev.to/deciduously/workstation-management-with-nix-flakes-build-a-cmake-c-package-21lp
+    };
+    nativeBuildInputs = [
+      gcc
+      cmake
+    ];
+  };
+in
 mkShell {
   buildInputs = [
     (dlib.override { guiSupport = true; })
@@ -8,6 +23,7 @@ mkShell {
     gtk2.dev # not necessary
     opencv
     opencv2.dev
+    libremidi
   ];
   nativeBuildInputs = [
     bzip2
@@ -26,8 +42,6 @@ mkShell {
     pcre.dev # not necessary
   ];
   shellHook = ''
-    echo '${libthai}'
-    echo '${libthai.out}'
     if [[ -n $LD_LIBRARY_PATH ]]; then
       LD_LIBRARY_PATH="${opencv.out}/lib:$LD_LIBRARY_PATH"
     else
