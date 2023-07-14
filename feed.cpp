@@ -73,6 +73,7 @@ static const bool isDebug = false;
 
 std::mutex m;
 
+bool calibrationGreenLight = false;
 bool noseCalibrationInPosition = false;
 bool noseCalibrationComplete = false;
 
@@ -156,7 +157,65 @@ void eyeTracking(dlib::image_window* win, cv::Mat* mat, dlib::full_object_detect
   // } deletable
 }
 
+void interpretFacialData() {
+  // wait for calibration before running
+  while (true) {
+    m.lock();
+    if (true
+      && noseCalibrationComplete
+      && mouthCalibrationClosedComplete
+      && mouthCalibrationOpenUpDownComplete
+      && mouthCalibrationOpenRightLeftComplete) {
+      m.unlock();
+      break;
+    }
+    m.unlock();
+    std::this_thread::sleep_for(100ms);
+  }
+  if (isDebug) {
+    cout << "[LOG] interpretFacialData() green light" << endl;
+  }
+  while (true) {
+    m.lock();
+      int noseDeltaX = noseCurrentPosition[0] - noseZeroCalibrated[0];
+      int noseDeltaY = noseCurrentPosition[1] - noseZeroCalibrated[1];
+      double atanRes = atan2(noseDeltaY, noseDeltaX);
+      double magnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
+      atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
+      double scaleDegree = round((atanRes) / 6.28 * 12.0);
+    m.unlock();
+
+    m.lock();
+    // do stuff with mouth dimensions
+    // int mouthOuterLipUpDownCurrentDistance;
+    // int mouthOuterLipRightLeftCurrentDistance;
+    // int mouthOuterLipUpDownClosedDistanceCalibrated;
+    // int mouthOuterLipRightLeftClosedDistanceCalibrated;
+    // int mouthOuterLipUpDownOpenDistanceCalibrated;
+    // int mouthOuterLipRightLeftOpenDistanceCalibrated;
+    if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
+      cout << "mouth open " << ((float)(mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated) / (mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated)) << endl;
+    } else {
+      cout << "mouth closed" << endl;
+    }
+    m.unlock();
+  }
+}
+
 void calibration() {
+  // wait for facial recog to set up before running
+  while (true) {
+    m.lock();
+    if (calibrationGreenLight) {
+      m.unlock();
+      break;
+    }
+    m.unlock();
+    std::this_thread::sleep_for(100ms);
+  }
+  if (isDebug) {
+    cout << "[LOG] calibration() green light" << endl;
+  }
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
   cout << "#        Nose Calibration        #" << endl;
@@ -171,27 +230,18 @@ void calibration() {
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
   getchar();
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Saving position...            #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+
   m.lock();
-  noseCalibrationInPosition = true;
+  noseZeroCalibrated[0] = noseCurrentPosition[0];
+  noseZeroCalibrated[1] = noseCurrentPosition[1];
+  noseCalibrationComplete = true;
   m.unlock();
-  while (true) {
-    m.lock();
-    if (noseCalibrationComplete) {
-      cout << "##################################" << endl;
-      cout << "#                                #" << endl;
-      cout << "#            Done!               #" << endl;
-      cout << "#                                #" << endl;
-      cout << "##################################" << endl;
-      m.unlock();
-      break;
-    }
-    m.unlock();
-  }
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
 
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
@@ -206,27 +256,34 @@ void calibration() {
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
   getchar();
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Saving position...       #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-  m.lock();
-  mouthCalibrationClosedInPosition = true;
-  m.unlock();
-  while (true) {
+
+  /*
+  int N = 100;
+  int measurements[N];
+  for (int i = 0; i < N; i ++) {
     m.lock();
-    if (mouthCalibrationClosedComplete) {
-      cout << "##################################" << endl;
-      cout << "#                                #" << endl;
-      cout << "#            Done!               #" << endl;
-      cout << "#                                #" << endl;
-      cout << "##################################" << endl;
-      m.unlock();
-      break;
-    }
+    measurements[i] = mouthOuterLipUpDownCurrentDistance;
     m.unlock();
   }
+  // std::accumulate
+  mouthOuterLipUpDownClosedDistanceCalibrated = 
+  for (int i = 0; i < N; i ++) {
+    m.lock();
+    measurements[i] = mouthOuterLipRightLeftCurrentDistance;
+    m.unlock();
+  }
+  */
+  m.lock();
+  mouthOuterLipUpDownClosedDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
+  mouthOuterLipRightLeftClosedDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
+  mouthCalibrationClosedComplete = true;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
 
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
@@ -241,27 +298,17 @@ void calibration() {
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
   getchar();
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Saving position...       #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+
   m.lock();
-  mouthCalibrationOpenUpDownInPosition = true;
+  mouthOuterLipUpDownOpenDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
+  mouthCalibrationOpenUpDownComplete = true;
   m.unlock();
-  while (true) {
-    m.lock();
-    if (mouthCalibrationOpenUpDownComplete) {
-      cout << "##################################" << endl;
-      cout << "#                                #" << endl;
-      cout << "#            Done!               #" << endl;
-      cout << "#                                #" << endl;
-      cout << "##################################" << endl;
-      m.unlock();
-      break;
-    }
-    m.unlock();
-  }
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
 
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
@@ -276,64 +323,104 @@ void calibration() {
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
   getchar();
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Saving position...       #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+
   m.lock();
-  mouthCalibrationOpenRightLeftInPosition = true;
+  mouthOuterLipRightLeftOpenDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
+  mouthCalibrationOpenRightLeftComplete = true;
   m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+}
+
+void midiDriver() {
+  // FIXME
+  libremidi::observer::callbacks midiCallback;
+  midiCallback.output_added = [](int index, std::string name) {
+    cout << "[libremidiCallback]: output added (index: " << index << ", name: " << name << ")" << endl;
+  };
+  // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
+  libremidi::midi_out midi = libremidi::midi_out(libremidi::API::LINUX_ALSA_SEQ, "midi client");
+  midi.open_port(0);
   while (true) {
-    m.lock();
-    if (mouthCalibrationOpenRightLeftComplete) {
-      cout << "##################################" << endl;
-      cout << "#                                #" << endl;
-      cout << "#            Done!               #" << endl;
-      cout << "#                                #" << endl;
-      cout << "##################################" << endl;
-      m.unlock();
-      break;
-    }
-    m.unlock();
+    midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)2, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)3, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)4, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)5, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)6, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)7, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)8, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)9, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)10, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)11, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)12, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)13, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)14, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)15, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_on((uint8_t)16, (uint8_t)48, (uint8_t)127));
+    std::this_thread::sleep_for(1000ms);
+    midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)2, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)3, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)4, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)5, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)6, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)7, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)8, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)9, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)10, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)11, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)12, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)13, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)14, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)15, (uint8_t)48, (uint8_t)127));
+    midi.send_message(libremidi::message::note_off((uint8_t)16, (uint8_t)48, (uint8_t)127));
+    cout << "message apparently sent." << endl;
+    cout << "Port open status: " << (midi.is_port_open() ? "opened" : "unopened" ) << endl;;
   }
+
 }
 
 int main(int argc, char** argv) {  
   try {
+    std::thread thread_calibration(calibration);
+    std::thread thread_interpretFacialData(interpretFacialData);
+    std::thread thread_midiDriver(midiDriver);
+
     cv::VideoCapture cap(0);
     // work to figure out best size
     cap.set(cv::CAP_PROP_FRAME_WIDTH, 70);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, 100);
-    // FIXME: explore to see if this can be black and white cap.set(cv::CAP_PROP_CONVERT_RGB, 0);
     if (!cap.isOpened()) {
       cerr << "Unable to connect to camera" << endl;
       return 1;
     }
     if (argc == 1) {
       cout << "Call this program like this:" << endl;
-      cout << "./face_landmark_detection_ex shape_predictor_68_face_landmarks.dat" << endl;
+      cout << "./program /path/to/shape_predictor_68_face_landmarks.dat" << endl;
       cout << "\nYou can get the shape_predictor_68_face_landmarks.dat file from:\n";
       cout << "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2" << endl;
       return 0;
     }
 
-    // We need a face detector.  We will use this to get bounding boxes for
-    // each face in an image.
+    // get bounding boxes for each face in the image
     frontal_face_detector detector = get_frontal_face_detector();
-    // And we also need a shape_predictor.  This is the tool that will predict face
-    // landmark positions given an image and face bounding box.  Here we are just
-    // loading the model from the shape_predictor_68_face_landmarks.dat file you gave
-    // as a command line argument.
+    // the shape_predictor predicts face landmark positions given an image and face bounding box
+    // will need to download shape_predictor_68_face_landmarks.dat.bz2 before using
     shape_predictor sp;
     deserialize(argv[1]) >> sp;
 
 
     image_window win;
     std::vector<rectangle> faces;
-    // FIXME: eventually start midi process as a side
-    std::thread thread_calibration(calibration);
     while (!win.is_closed()) {
+      m.lock();
+      calibrationGreenLight = true;
+      m.unlock();
       if (isDebug) {
         cout << "[LOG] while entered" << endl;
       }
@@ -380,72 +467,18 @@ int main(int argc, char** argv) {
           eyeTracking(&win, &matrix, &shape);
         }
 
-        // FIXME: this needs to be extracted from the main process
-        if (m.try_lock()) {
-          noseCurrentPosition[0] = shape.part(34-1).x();
-          noseCurrentPosition[1] = shape.part(34-1).y();
-          if (noseCalibrationInPosition && !noseCalibrationComplete) {
-            noseZeroCalibrated[0] = noseCurrentPosition[0];
-            noseZeroCalibrated[1] = noseCurrentPosition[1];
-            noseCalibrationComplete = true;
-          }
-          if (noseCalibrationComplete) {
-            int noseDeltaX = (noseCurrentPosition[0] - noseZeroCalibrated[0]);
-            int noseDeltaY = (noseCurrentPosition[1] - noseZeroCalibrated[1]);
-            // noseDeltaY cannot be 0, so we will by default move it over by 1 if it is.
-            if (noseDeltaY == 0) {
-              noseDeltaY = 1;
-            }
-            double atanRes = atan2(noseDeltaY, noseDeltaX);
-            double magnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
-            atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
-            double scaleDegree = round((atanRes) / 6.28 * 12.0);
-            cv::line(matrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Scalar(0, 0, 0), 1);
-          }
-          m.unlock();
-        }
-
-        // FIXME: this needs to be extracted from the main process
-        if (m.try_lock()) {
-          mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
-          mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
-          if (mouthCalibrationClosedInPosition && !mouthCalibrationClosedComplete) {
-            mouthOuterLipUpDownClosedDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
-            mouthOuterLipRightLeftClosedDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
-            mouthCalibrationClosedComplete = true;
-          }
-          if (mouthCalibrationClosedComplete) {
-            // do stuff with mouth dimensions
-          }
-          if (mouthCalibrationOpenUpDownInPosition && !mouthCalibrationOpenUpDownComplete) {
-            mouthOuterLipUpDownOpenDistanceCalibrated = mouthOuterLipUpDownCurrentDistance;
-            mouthCalibrationOpenUpDownComplete = true;
-          }
-          if (mouthCalibrationOpenUpDownComplete) {
-            // do stuff with mouth dimensions
-          }
-          if (mouthCalibrationOpenRightLeftInPosition && !mouthCalibrationOpenRightLeftComplete) {
-            mouthOuterLipRightLeftOpenDistanceCalibrated = mouthOuterLipRightLeftCurrentDistance;
-            mouthCalibrationOpenRightLeftComplete = true;
-          }
-          if (mouthCalibrationOpenRightLeftComplete) {
-            // do stuff with mouth dimensions
-          }
-          m.unlock();
-        }
+        // capture nose position
+        m.lock();
+        noseCurrentPosition[0] = shape.part(34-1).x();
+        noseCurrentPosition[1] = shape.part(34-1).y();
+        m.unlock();
+        // capture mouth dimensions
+        m.lock();
+        mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
+        mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
+        m.unlock();
         // opencvShowGrayscaleMatrix(&win, &matrix);
         
-        // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
-        libremidi::midi_out midi;
-        midi.open_virtual_port();
-        while (true) {
-          midi.send_message(libremidi::message::note_on(1, 48, 127));
-          std::this_thread::sleep_for(1000ms);
-          midi.send_message(libremidi::message::note_off(1, 48, 127));
-          cout << "message apparently sent." << endl;
-          cout << "Port open status: " << (midi.is_port_open() ? "opened" : "unopened" ) << endl;;
-        }
-
         win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;

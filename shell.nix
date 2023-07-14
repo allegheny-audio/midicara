@@ -10,6 +10,7 @@ let
       sha256 = "aO83a0DmzwjYXDlPIsn136EkDF0406HadTXPoGuVF6I="; # https://dev.to/deciduously/workstation-management-with-nix-flakes-build-a-cmake-c-package-21lp
     };
     nativeBuildInputs = [
+      alsa-lib
       gcc
       cmake
     ];
@@ -24,6 +25,7 @@ mkShell {
     opencv
     opencv2.dev
     libremidi
+    alsa-lib
   ];
   nativeBuildInputs = [
     bzip2
@@ -42,6 +44,8 @@ mkShell {
     pcre.dev # not necessary
   ];
   shellHook = ''
+    echo '${alsa-lib}'
+    echo '${libremidi}'
     if [[ -n $LD_LIBRARY_PATH ]]; then
       LD_LIBRARY_PATH="${opencv.out}/lib:$LD_LIBRARY_PATH"
     else
