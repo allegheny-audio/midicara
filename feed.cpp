@@ -1,6 +1,7 @@
 #include <dlib/opencv.h>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/core/hal/interface.h>
 #include <dlib/image_processing/frontal_face_detector.h>
 #include <dlib/image_processing/render_face_detections.h>
 #include <dlib/image_processing.h>
@@ -10,6 +11,8 @@
 #include <thread>
 #include <mutex>
 #include <math.h>
+#include <chrono>
+#include <ctime>
 #include <libremidi/libremidi.hpp>
 
 using namespace dlib;
@@ -23,6 +26,9 @@ static const bool isDebug = false;
 
 std::mutex m;
 std::mutex midiMutex;
+
+const unsigned int capPropFrameWidth = 70;
+const unsigned int capPropFrameHeight = 100;
 
 bool calibrationGreenLight = false;
 bool noseCalibrationInPosition = false;
@@ -56,6 +62,13 @@ double mouthOpenPercentage;
 double mouthWidePercentage;
 unsigned int scaleDegree;
 unsigned int noseDistanceMagnitude;
+
+unsigned int polyphonyCacheSize = 6;
+struct polyphonyCacheItem {
+  unsigned int note;
+  std::chrono::high_resolution_clock::time_point entryTime;
+};
+polyphonyCacheItem* polyphonyCache;
 
 // for debugging purposes: show an opencv matrix on a display window
 void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
@@ -318,7 +331,8 @@ void calibration() {
 }
 
 void midiDriver() {
-  // FIXME
+  // initialize polyphonyCache variable
+  polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
   libremidi::observer::callbacks midiCallback;
   midiCallback.output_added = [](int index, std::string name) {
     cout << "[libremidiCallback]: output added (index: " << index << ", name: " << name << ")" << endl;
@@ -339,24 +353,55 @@ void midiDriver() {
   midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)78, (uint8_t)70));
   std::this_thread::sleep_for(1200ms);
   midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)74, (uint8_t)55));
+  std::this_thread::sleep_for(1200ms);
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)48, (uint8_t)70));
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)52, (uint8_t)70));
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)55, (uint8_t)70));
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)59, (uint8_t)70));
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)78, (uint8_t)70));
+  midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)74, (uint8_t)55));
   uint8_t channel;
   uint8_t note;
   uint8_t velocity;
+  std::chrono::high_resolution_clock::time_point timePoint;
+  unsigned int polyphonyCacheIndex = 0;
   while (true) {
     midiMutex.lock();
     if (false) {
     } else if (mouthOpen && !midiPlaying) {
       channel = 1;
-      note = 48 + scaleDegree;
+      note = 60 + scaleDegree;
       velocity = round(127 * (mouthWidePercentage > 1.0 ? 0 : 1 - mouthWidePercentage));
+      timePoint = std::chrono::high_resolution_clock::now();
+      // FIXME: polyphony
+      if (polyphonyCache[polyphonyCacheIndex].note == note) {
+        midi.send_message(libremidi::message::note_off(channel, note, velocity));
+      }
+      polyphonyCache[polyphonyCacheIndex].note = note;
+      polyphonyCache[polyphonyCacheIndex].entryTime = timePoint;
       midi.send_message(libremidi::message::note_on(channel, note, velocity));
       midiPlaying = true;
+      polyphonyCacheIndex = (polyphonyCacheIndex + 1) % polyphonyCacheSize;
     } else if (!mouthOpen && midiPlaying) {
       channel = 1;
-      note = 48 + scaleDegree;
+      note = 60 + scaleDegree;
       velocity = 127;
+      for (int i = 0; i < polyphonyCacheSize; i++) {
+        if (polyphonyCache[i].note == note) {
+          // remove note; we stop playing it
+          polyphonyCache[i].note = std::numeric_limits<int>::max();
+          polyphonyCache[i].entryTime = std::chrono::high_resolution_clock::time_point::min();
+        }
+      }
       midi.send_message(libremidi::message::note_off(channel, note, velocity));
       midiPlaying = false;
+    }
+    for (int i = 0; i < polyphonyCacheSize; i++) {
+      timePoint = std::chrono::high_resolution_clock::now();
+      if (std::chrono::duration_cast<std::chrono::milliseconds>(timePoint - polyphonyCache[i].entryTime).count() > 4000) {
+        polyphonyCache[i].note == std::numeric_limits<int>::max();
+        polyphonyCache[i].entryTime == std::chrono::high_resolution_clock::time_point::min();
+      }
     }
     midiMutex.unlock();
   }
@@ -370,9 +415,9 @@ int main(int argc, char** argv) {
     std::thread thread_midiDriver(midiDriver);
 
     cv::VideoCapture cap(0);
-    // work to figure out best size
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 70);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 100);
+    // FIXME: work to figure out optimal size
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, capPropFrameWidth);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, capPropFrameHeight);
     if (!cap.isOpened()) {
       cerr << "Unable to connect to camera" << endl;
       return 1;
@@ -415,6 +460,8 @@ int main(int argc, char** argv) {
       // to reallocate the memory which stores the image as that will make baseimg
       // contain dangling pointers.  This basically means you shouldn't modify matrix
       // while using baseimg.
+      cv::Mat guiMatrix = cv::Mat(matrix.size(), matrix.type(), cv::Scalar::all(255));
+      cv::flip(guiMatrix, guiMatrix, 1);
       // set color to grayscale
       cv::cvtColor(matrix, matrix, cv::COLOR_BGR2GRAY);
       cv::flip(matrix, matrix, 1);
@@ -448,18 +495,41 @@ int main(int argc, char** argv) {
         m.lock();
         if (noseCalibrationComplete) {
           for (int i = 0; i < 12; i++) {
-            double theta = ((double) i / 12.0) * 6.28;
+            double theta = ((double) i / 12.0) * 6.28 - 6.28 / 24;
             midiMutex.lock();
-            cv::line(matrix, cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Point(round(cos(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[0], round(sin(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[1]), cv::Scalar(0, 0, 0));
+            cv::line(guiMatrix, cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Point(round(cos(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[0], round(sin(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[1]), cv::Scalar(0, 0, 0));
             midiMutex.unlock();
           }
         }
         m.unlock();
+        m.lock();
+        cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 2);
+        cv::line(guiMatrix,
+            cv::Point(capPropFrameWidth - 1, round(capPropFrameHeight / 2) - (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Point(capPropFrameWidth - 1 - 5, round(capPropFrameHeight / 2) - (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Scalar(0, 0, 0),
+            2);
+        cv::line(guiMatrix,
+            cv::Point(capPropFrameWidth - 1, round(capPropFrameHeight / 2) + (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Point(capPropFrameWidth - 1 - 5, round(capPropFrameHeight / 2) + (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Scalar(0, 0, 0),
+            2);
+        cv::line(guiMatrix, 
+            cv::Point(round(capPropFrameWidth / 2) - (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1),
+            cv::Point(round(capPropFrameWidth / 2) - (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1 - 5),
+            cv::Scalar(0, 0, 0),
+            2);
+        cv::line(guiMatrix, 
+            cv::Point(round(capPropFrameWidth / 2) + (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1),
+            cv::Point(round(capPropFrameWidth / 2) + (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1 - 5),
+            cv::Scalar(0, 0, 0),
+            2);
+        m.unlock();
 
         // capture nose position
         m.lock();
-        noseCurrentPosition[0] = shape.part(34-1).x();
-        noseCurrentPosition[1] = shape.part(34-1).y();
+        noseCurrentPosition[0] = shape.part(31-1).x();
+        noseCurrentPosition[1] = shape.part(31-1).y();
         m.unlock();
         // capture mouth dimensions
         m.lock();
@@ -468,15 +538,16 @@ int main(int argc, char** argv) {
         m.unlock();
         // opencvShowGrayscaleMatrix(&win, &matrix);
         
+        cv_image<bgr_pixel> guiImg(guiMatrix);
         win.clear_overlay();
         if (isDebug) {
           cout << "[LOG] win.clear_overlay()" << endl;
         }
-        win.set_image(baseimg);
+        win.set_image(guiImg);
         if (isDebug) {
           cout << "[LOG] win.set_image(baseimg)" << endl;
         }
-        win.add_overlay(render_face_detections(shape));
+        // win.add_overlay(render_face_detections(shape));
         if (isDebug) {
           cout << "[LOG] end of while, going back" << endl;
         }
