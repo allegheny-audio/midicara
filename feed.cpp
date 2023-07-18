@@ -505,23 +505,23 @@ int main(int argc, char** argv) {
         m.lock();
         cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 2);
         cv::line(guiMatrix,
-            cv::Point(capPropFrameWidth - 1, round(capPropFrameHeight / 2) - (mouthOuterLipUpDownCurrentDistance / 2)),
-            cv::Point(capPropFrameWidth - 1 - 5, round(capPropFrameHeight / 2) - (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Point(capPropFrameWidth * 2 - 1, round(capPropFrameHeight) - (mouthOuterLipUpDownCurrentDistance)),
+            cv::Point(capPropFrameWidth * 2 - 1 - 5, round(capPropFrameHeight) - (mouthOuterLipUpDownCurrentDistance)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix,
-            cv::Point(capPropFrameWidth - 1, round(capPropFrameHeight / 2) + (mouthOuterLipUpDownCurrentDistance / 2)),
-            cv::Point(capPropFrameWidth - 1 - 5, round(capPropFrameHeight / 2) + (mouthOuterLipUpDownCurrentDistance / 2)),
+            cv::Point(capPropFrameWidth * 2 - 1, round(capPropFrameHeight) + (mouthOuterLipUpDownCurrentDistance)),
+            cv::Point(capPropFrameWidth * 2 - 1 - 5, round(capPropFrameHeight) + (mouthOuterLipUpDownCurrentDistance)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(capPropFrameWidth / 2) - (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1),
-            cv::Point(round(capPropFrameWidth / 2) - (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1 - 5),
+            cv::Point(round(capPropFrameWidth) - (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 3 - 15),
+            cv::Point(round(capPropFrameWidth) - (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 3 - 15 - 5),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(capPropFrameWidth / 2) + (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1),
-            cv::Point(round(capPropFrameWidth / 2) + (mouthOuterLipRightLeftCurrentDistance / 2), capPropFrameHeight - 1 - 5),
+            cv::Point(round(capPropFrameWidth) + (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 2 - 1),
+            cv::Point(round(capPropFrameWidth) + (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 2 - 1 - 5),
             cv::Scalar(0, 0, 0),
             2);
         m.unlock();
@@ -540,16 +540,15 @@ int main(int argc, char** argv) {
         
         cv_image<bgr_pixel> guiImg(guiMatrix);
         win.clear_overlay();
-        if (isDebug) {
-          cout << "[LOG] win.clear_overlay()" << endl;
-        }
-        win.set_image(guiImg);
-        if (isDebug) {
-          cout << "[LOG] win.set_image(baseimg)" << endl;
-        }
-        // win.add_overlay(render_face_detections(shape));
-        if (isDebug) {
-          cout << "[LOG] end of while, going back" << endl;
+        if (true
+          && noseCalibrationComplete
+          && mouthCalibrationClosedComplete
+          && mouthCalibrationOpenUpDownComplete
+          && mouthCalibrationOpenRightLeftComplete) {
+          win.set_image(guiImg);
+        } else {
+          win.set_image(baseimg);
+          win.add_overlay(render_face_detections(shape));
         }
       }
     }
