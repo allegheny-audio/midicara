@@ -22,6 +22,7 @@ static const bool isDebug = false;
 #endif
 
 std::mutex m;
+std::mutex midiMutex;
 
 bool calibrationGreenLight = false;
 bool noseCalibrationInPosition = false;
@@ -48,6 +49,13 @@ int mouthOuterLipUpDownOpenDistanceCalibrated;
 int mouthInnerLipUpDownOpenDistanceCalibrated;
 int mouthOuterLipRightLeftOpenDistanceCalibrated;
 int mouthInnerLipRightLeftOpenDistanceCalibrated;
+
+bool midiPlaying;
+bool mouthOpen;
+double mouthOpenPercentage;
+double mouthWidePercentage;
+unsigned int scaleDegree;
+unsigned int noseDistanceMagnitude;
 
 // for debugging purposes: show an opencv matrix on a display window
 void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
@@ -132,22 +140,38 @@ void interpretFacialData() {
     cout << "[LOG] interpretFacialData() green light" << endl;
   }
   while (true) {
+    // handle nose dimensions
     m.lock();
-      int noseDeltaX = noseCurrentPosition[0] - noseZeroCalibrated[0];
-      int noseDeltaY = noseCurrentPosition[1] - noseZeroCalibrated[1];
-      double atanRes = atan2(noseDeltaY, noseDeltaX);
-      double magnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
-      atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
-      double scaleDegree = round((atanRes) / 6.28 * 12.0);
+    int noseDeltaX = noseCurrentPosition[0] - noseZeroCalibrated[0];
+    int noseDeltaY = noseCurrentPosition[1] - noseZeroCalibrated[1];
     m.unlock();
+    double atanRes = atan2(noseDeltaY, noseDeltaX);
+    atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
+    midiMutex.lock();
+    noseDistanceMagnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
+    scaleDegree = round((atanRes) / 6.28 * 12.0);
+    midiMutex.unlock();
 
+    // handle mouth dimensions
     m.lock();
-    // do stuff with mouth dimensions
     if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
-      cout << "mouth open " <<
-        ((float)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2) / ((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)) << endl;
+      midiMutex.lock();
+      mouthOpen = true;
+      mouthOpenPercentage = (double)(
+          (double)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)
+          /
+          (double)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)
+      );
+      mouthWidePercentage = (double)(
+          (double)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2)
+          /
+          (double)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2)
+      );
+      midiMutex.unlock();
     } else {
-      cout << "mouth closed" << endl;
+      midiMutex.lock();
+      mouthOpen = false;
+      midiMutex.unlock();
     }
     m.unlock();
   }
@@ -300,44 +324,41 @@ void midiDriver() {
     cout << "[libremidiCallback]: output added (index: " << index << ", name: " << name << ")" << endl;
   };
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
-  libremidi::midi_out midi = libremidi::midi_out(libremidi::API::LINUX_ALSA_SEQ, "midi client");
-  midi.open_port(0);
+  libremidi::midi_out midi = libremidi::midi_out(libremidi::API::LINUX_ALSA_SEQ, "test");
+  midi.open_port(1);
+  // startup sequence
+  std::this_thread::sleep_for(1000ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)48, (uint8_t)70));
+  std::this_thread::sleep_for(100ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)52, (uint8_t)70));
+  std::this_thread::sleep_for(100ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)55, (uint8_t)70));
+  std::this_thread::sleep_for(100ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)59, (uint8_t)70));
+  std::this_thread::sleep_for(1000ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)78, (uint8_t)70));
+  std::this_thread::sleep_for(1200ms);
+  midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)74, (uint8_t)55));
+  uint8_t channel;
+  uint8_t note;
+  uint8_t velocity;
   while (true) {
-    midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)2, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)3, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)4, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)5, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)6, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)7, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)8, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)9, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)10, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)11, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)12, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)13, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)14, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)15, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_on((uint8_t)16, (uint8_t)48, (uint8_t)127));
-    std::this_thread::sleep_for(1000ms);
-    midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)2, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)3, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)4, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)5, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)6, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)7, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)8, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)9, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)10, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)11, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)12, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)13, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)14, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)15, (uint8_t)48, (uint8_t)127));
-    midi.send_message(libremidi::message::note_off((uint8_t)16, (uint8_t)48, (uint8_t)127));
-    cout << "message apparently sent." << endl;
-    cout << "Port open status: " << (midi.is_port_open() ? "opened" : "unopened" ) << endl;;
+    midiMutex.lock();
+    if (false) {
+    } else if (mouthOpen && !midiPlaying) {
+      channel = 1;
+      note = 48 + scaleDegree;
+      velocity = round(127 * (mouthWidePercentage > 1.0 ? 0 : 1 - mouthWidePercentage));
+      midi.send_message(libremidi::message::note_on(channel, note, velocity));
+      midiPlaying = true;
+    } else if (!mouthOpen && midiPlaying) {
+      channel = 1;
+      note = 48 + scaleDegree;
+      velocity = 127;
+      midi.send_message(libremidi::message::note_off(channel, note, velocity));
+      midiPlaying = false;
+    }
+    midiMutex.unlock();
   }
 
 }
@@ -423,6 +444,17 @@ int main(int argc, char** argv) {
         if (false) {
           eyeTracking(&win, &matrix, &shape);
         }
+
+        m.lock();
+        if (noseCalibrationComplete) {
+          for (int i = 0; i < 12; i++) {
+            double theta = ((double) i / 12.0) * 6.28;
+            midiMutex.lock();
+            cv::line(matrix, cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Point(round(cos(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[0], round(sin(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[1]), cv::Scalar(0, 0, 0));
+            midiMutex.unlock();
+          }
+        }
+        m.unlock();
 
         // capture nose position
         m.lock();
