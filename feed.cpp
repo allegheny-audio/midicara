@@ -27,7 +27,7 @@ static const bool isDebug = false;
 std::mutex m;
 std::mutex midiMutex;
 
-const unsigned int capPropFrameWidth = 70;
+const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
 
 bool calibrationGreenLight = false;
@@ -149,9 +149,15 @@ void interpretFacialData() {
     m.unlock();
     std::this_thread::sleep_for(100ms);
   }
-  if (isDebug) {
-    cout << "[LOG] interpretFacialData() green light" << endl;
-  }
+  auto percentageNormalize = [](double percentage) -> double {
+    if (percentage > 1.0) {
+      return 1.0;
+    } else if (percentage < 0) {
+      return 0;
+    } else {
+      return percentage;
+    }
+  };
   while (true) {
     // handle nose dimensions
     m.lock();
@@ -170,16 +176,16 @@ void interpretFacialData() {
     if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
       midiMutex.lock();
       mouthOpen = true;
-      mouthOpenPercentage = (double)(
-          (double)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)
+      mouthOpenPercentage = percentageNormalize((double)(
+          (double)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
           /
-          (double)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2)
-      );
-      mouthWidePercentage = (double)(
-          (double)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2)
+          (double)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
+      ));
+      mouthWidePercentage = percentageNormalize((double)(
+          (double)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
           /
-          (double)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2)
-      );
+          (double)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
+      ));
       midiMutex.unlock();
     } else {
       midiMutex.lock();
@@ -218,9 +224,6 @@ void calibration() {
     }
     m.unlock();
     std::this_thread::sleep_for(100ms);
-  }
-  if (isDebug) {
-    cout << "[LOG] calibration() green light" << endl;
   }
   cout << "##################################" << endl;
   cout << "#                                #" << endl;
@@ -333,10 +336,6 @@ void calibration() {
 void midiDriver() {
   // initialize polyphonyCache variable
   polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
-  libremidi::observer::callbacks midiCallback;
-  midiCallback.output_added = [](int index, std::string name) {
-    cout << "[libremidiCallback]: output added (index: " << index << ", name: " << name << ")" << endl;
-  };
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
   libremidi::midi_out midi = libremidi::midi_out(libremidi::API::LINUX_ALSA_SEQ, "test");
   midi.open_port(1);
@@ -371,7 +370,7 @@ void midiDriver() {
     } else if (mouthOpen && !midiPlaying) {
       channel = 1;
       note = 60 + scaleDegree;
-      velocity = round(127 * (mouthWidePercentage > 1.0 ? 0 : 1 - mouthWidePercentage));
+      velocity = round(127 * (1.0 - mouthWidePercentage));
       timePoint = std::chrono::high_resolution_clock::now();
       // FIXME: polyphony
       if (polyphonyCache[polyphonyCacheIndex].note == note) {
@@ -444,15 +443,9 @@ int main(int argc, char** argv) {
       m.lock();
       calibrationGreenLight = true;
       m.unlock();
-      if (isDebug) {
-        cout << "[LOG] while entered" << endl;
-      }
       cv::Mat matrix;
       if (!cap.read(matrix)) {
         break;
-      }
-      if (isDebug) {
-        cout << "[LOG] cap read" << endl;
       }
       // Turn OpenCV's Mat into something dlib can deal with.  Note that this just
       // wraps the Mat object, it doesn't copy anything.  So baseimg is only valid as
@@ -468,30 +461,16 @@ int main(int argc, char** argv) {
       // use unsigned char instead of `bgr_pixel` as pixel type,
       // because we are working with grayscale magnitude
       cv_image<unsigned char> baseimg(matrix);
-      if (isDebug) {
-        cout << "[LOG] baseimg(matrix)" << endl;
-      }
       // detect faces
       faces = detector(baseimg);
-      if (isDebug) {
-        cout << "[LOG] detector(baseimg)" << endl;
-      }
       // find the pose of each face
       // assume only one face is detected, because only one person will be using this
       if (!faces.empty()) {
         full_object_detection shape = sp(baseimg, faces[0]);
-        if (isDebug) {
-          cout << "[LOG] sp(baseimg, faces[0])" << endl;
-        }
-        if (isDebug) {
-          cout << "[LOG] num_parts()" << endl;
-        }
-        
         // NOTE: for testing only
         if (false) {
           eyeTracking(&win, &matrix, &shape);
         }
-
         m.lock();
         if (noseCalibrationComplete) {
           for (int i = 0; i < 12; i++) {
@@ -502,41 +481,43 @@ int main(int argc, char** argv) {
           }
         }
         m.unlock();
+        std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
         m.lock();
-        cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 2);
+        int guiMatrixWidth = guiMatrix.cols;
+        int guiMatrixHeight = guiMatrix.rows;
+        cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 1);
         cv::line(guiMatrix,
-            cv::Point(capPropFrameWidth * 2 - 1, round(capPropFrameHeight) - (mouthOuterLipUpDownCurrentDistance)),
-            cv::Point(capPropFrameWidth * 2 - 1 - 5, round(capPropFrameHeight) - (mouthOuterLipUpDownCurrentDistance)),
+            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix,
-            cv::Point(capPropFrameWidth * 2 - 1, round(capPropFrameHeight) + (mouthOuterLipUpDownCurrentDistance)),
-            cv::Point(capPropFrameWidth * 2 - 1 - 5, round(capPropFrameHeight) + (mouthOuterLipUpDownCurrentDistance)),
+            cv::Point(guiMatrixWidth - 1, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1 - 5, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(capPropFrameWidth) - (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 3 - 15),
-            cv::Point(round(capPropFrameWidth) - (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 3 - 15 - 5),
+            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
+            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(capPropFrameWidth) + (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 2 - 1),
-            cv::Point(round(capPropFrameWidth) + (mouthOuterLipRightLeftCurrentDistance), capPropFrameHeight * 2 - 1 - 5),
+            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
+            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
             cv::Scalar(0, 0, 0),
             2);
         m.unlock();
+        std::chrono::high_resolution_clock::time_point t2 = std::chrono::high_resolution_clock::now();
+        cout << "latency: " << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << "us" << endl;
 
         // capture nose position
         m.lock();
         noseCurrentPosition[0] = shape.part(31-1).x();
         noseCurrentPosition[1] = shape.part(31-1).y();
-        m.unlock();
         // capture mouth dimensions
-        m.lock();
         mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
         mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
         m.unlock();
-        // opencvShowGrayscaleMatrix(&win, &matrix);
         
         cv_image<bgr_pixel> guiImg(guiMatrix);
         win.clear_overlay();
@@ -550,6 +531,9 @@ int main(int argc, char** argv) {
           win.set_image(baseimg);
           win.add_overlay(render_face_detections(shape));
         }
+      } else {
+        win.clear_overlay();
+        win.set_image(baseimg);
       }
     }
   }

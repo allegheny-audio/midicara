@@ -26,6 +26,7 @@ mkShell {
     opencv2.dev
     libremidi
     alsa-lib
+    valgrind
   ];
   nativeBuildInputs = [
     bzip2
