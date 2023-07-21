@@ -31,17 +31,23 @@ const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
 
 bool calibrationGreenLight = false;
-bool noseCalibrationInPosition = false;
-bool noseCalibrationComplete = false;
 
-bool mouthCalibrationClosedInPosition = false;
+bool noseZeroCalibrationComplete = false;
+
 bool mouthCalibrationClosedComplete = false;
-bool mouthCalibrationOpenUpDownInPosition = false;
 bool mouthCalibrationOpenUpDownComplete = false;
-bool mouthCalibrationOpenRightLeftInPosition = false;
 bool mouthCalibrationOpenRightLeftComplete = false;
 
+bool nosePitchBoardUpperLeftComplete = false;
+bool nosePitchBoardUpperRightComplete = false;
+bool nosePitchBoardLowerRightComplete = false;
+bool nosePitchBoardLowerLeftComplete = false;
+
+bool nosePitchBoardCalculateComplete = false;
+
+unsigned int noseSensitivity = 2; // sensitivity multiplier to nose pointer position (because nose is fairly accurate, it can be increased in sensitivity)
 int noseCurrentPosition[2];
+int noseCurrentPositionMultiplied[2]; // current nose position multiplied by the sensitivity factor
 int noseZeroCalibrated[2];
 int mouthOuterLipUpDownCurrentDistance;
 int mouthOuterLipRightLeftCurrentDistance;
@@ -55,11 +61,25 @@ int mouthOuterLipUpDownOpenDistanceCalibrated;
 int mouthInnerLipUpDownOpenDistanceCalibrated;
 int mouthOuterLipRightLeftOpenDistanceCalibrated;
 int mouthInnerLipRightLeftOpenDistanceCalibrated;
+int nosePitchBoardUpperLeftPosition[2];
+int nosePitchBoardUpperRightPosition[2];
+int nosePitchBoardLowerRightPosition[2];
+int nosePitchBoardLowerLeftPosition[2];
+unsigned int pitchBoardNumberOfStrings = 4;
+unsigned int pitchBoardNumberOfFrets;
+bool TEMPpitchBoardLatticeCalculated = false;
+float*** pitchBoardPointsAsFloats;
+unsigned int*** pitchBoardPoints;
+struct pitchBoardQuadrilateralCacheItem {
+  float area;
+  unsigned char midiNote;
+};
+pitchBoardQuadrilateralCacheItem** pitchBoardQuadrilateralCache;
 
 bool midiPlaying;
 bool mouthOpen;
-double mouthOpenPercentage;
-double mouthWidePercentage;
+float mouthOpenPercentage;
+float mouthWidePercentage;
 unsigned int scaleDegree;
 unsigned int noseDistanceMagnitude;
 
@@ -75,6 +95,28 @@ void opencvShowGrayscaleMatrix(dlib::image_window* win, cv::Mat* mat) {
   cv_image<unsigned char> myImage(*mat);
   win->clear_overlay();
   win->set_image(myImage);
+}
+
+// create a 2D parameterized line function that starts from p1, f, and return f(t)
+float* parametricLine(float p1[], float p2[], float t) {
+  float* res = (float*)malloc(sizeof(float) * 2);
+  res[0] = p1[0] + (p2[0] - p1[0]) * t;
+  res[1] = p1[1] + (p2[1] - p1[1]) * t;
+  return res;
+}
+float* parametricLine(int p1[], int p2[], float t) {
+  float p1_f[2], p2_f[2];
+  p1_f[0] = (float)p1[0];
+  p1_f[1] = (float)p1[1];
+  p2_f[0] = (float)p2[0];
+  p2_f[1] = (float)p2[1];
+  return parametricLine((float*)p1_f, (float*)p2_f, t);
+}
+float triangleArea(int x1, int y1, int x2, int y2, int x3, int y3) {
+  return (float)std::abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0f;
+}
+float triangleArea(unsigned int p1[], unsigned int p2[], unsigned int p3[]) {
+  return triangleArea((int)p1[0], (int)p1[1], (int)p2[0], (int)p2[1], (int)p3[0], p3[1]);
 }
 
 // stab at seeing if eye tracking was a viable option for getting information. Turns out, it was not. At least, for now.
@@ -128,7 +170,6 @@ void eyeTracking(dlib::image_window* win, cv::Mat* mat, dlib::full_object_detect
   // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
 
   cv::bitwise_and(eyeBoundaryMatrix, eyesMatrix, eyesMatrix);
-  // FIXME: cv::findContours(eyesMatrix, contours, 30, 255, cv::THRESH_BINARY_INV);
   // { deletable
   opencvShowGrayscaleMatrix(win, &eyesMatrix);
   // } deletable
@@ -139,7 +180,8 @@ void interpretFacialData() {
   while (true) {
     m.lock();
     if (true
-      && noseCalibrationComplete
+      && noseZeroCalibrationComplete
+      && nosePitchBoardCalculateComplete
       && mouthCalibrationClosedComplete
       && mouthCalibrationOpenUpDownComplete
       && mouthCalibrationOpenRightLeftComplete) {
@@ -149,7 +191,7 @@ void interpretFacialData() {
     m.unlock();
     std::this_thread::sleep_for(100ms);
   }
-  auto percentageNormalize = [](double percentage) -> double {
+  auto percentageNormalize = [](float percentage) -> float {
     if (percentage > 1.0) {
       return 1.0;
     } else if (percentage < 0) {
@@ -159,32 +201,61 @@ void interpretFacialData() {
     }
   };
   while (true) {
-    // handle nose dimensions
-    m.lock();
-    int noseDeltaX = noseCurrentPosition[0] - noseZeroCalibrated[0];
-    int noseDeltaY = noseCurrentPosition[1] - noseZeroCalibrated[1];
-    m.unlock();
-    double atanRes = atan2(noseDeltaY, noseDeltaX);
-    atanRes = atanRes < 0 ? atanRes + 6.28 : atanRes;
-    midiMutex.lock();
-    noseDistanceMagnitude = round(sqrt(noseDeltaX * noseDeltaX + noseDeltaY * noseDeltaY));
-    scaleDegree = round((atanRes) / 6.28 * 12.0);
-    midiMutex.unlock();
-
+    // FIXME: determine which note to play
+    bool boundingBoxFound = false;
+    for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
+      if (boundingBoxFound)
+        break;
+      for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
+        if (boundingBoxFound)
+          break;
+        // quadrilateral area using center point
+        float quadrilateralAreaToCompare =
+          triangleArea(
+              noseCurrentPositionMultiplied[0],
+              noseCurrentPositionMultiplied[1],
+              (int)pitchBoardPoints[i][j][0],
+              (int)pitchBoardPoints[i][j][1],
+              (int)pitchBoardPoints[i+1][j][0],
+              (int)pitchBoardPoints[i+1][j][1])
+          + triangleArea(noseCurrentPositionMultiplied[0],
+              noseCurrentPositionMultiplied[1],
+              (int)pitchBoardPoints[i+1][j][0],
+              (int)pitchBoardPoints[i+1][j][1],
+              (int)pitchBoardPoints[i+1][j+1][0],
+              (int)pitchBoardPoints[i+1][j+1][1])
+          + triangleArea(noseCurrentPositionMultiplied[0],
+              noseCurrentPositionMultiplied[1],
+              (int)pitchBoardPoints[i+1][j+1][0],
+              (int)pitchBoardPoints[i+1][j+1][1],
+              (int)pitchBoardPoints[i][j+1][0],
+              (int)pitchBoardPoints[i][j+1][1])
+          + triangleArea(noseCurrentPositionMultiplied[0],
+              noseCurrentPositionMultiplied[1],
+              (int)pitchBoardPoints[i][j+1][0],
+              (int)pitchBoardPoints[i][j+1][1],
+              (int)pitchBoardPoints[i][j][0],
+              (int)pitchBoardPoints[i][j][1]);
+        if (quadrilateralAreaToCompare == pitchBoardQuadrilateralCache[i][j].area) {
+          cout << "(" << i << ", " << j << ")" << endl;
+          boundingBoxFound = true;
+        }
+      }
+    }
     // handle mouth dimensions
     m.lock();
     if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
       midiMutex.lock();
       mouthOpen = true;
-      mouthOpenPercentage = percentageNormalize((double)(
-          (double)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
+      mouthOpenPercentage = percentageNormalize((float)(
+          (float)((mouthOuterLipUpDownCurrentDistance - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownCurrentDistance - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
           /
-          (double)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
+          (float)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
       ));
-      mouthWidePercentage = percentageNormalize((double)(
-          (double)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
+      mouthWidePercentage = percentageNormalize((float)(
+          (float)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
           /
-          (double)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
+          (float)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
       ));
       midiMutex.unlock();
     } else {
@@ -194,6 +265,129 @@ void interpretFacialData() {
     }
     m.unlock();
   }
+}
+
+void calculatePitchBoardPoints() {
+  // calculate reduced row eschelon form.
+  // Stolen from: https://stackoverflow.com/questions/31756413/solving-a-simple-matrix-in-row-reduced-form-in-c
+  // FIXME
+  auto rowReduce = [](float A[2][3]) {
+    float res[2][3];
+    const int nrows = 2;
+    const int ncols = 3;
+    int lead = 0; 
+    while (lead < nrows) {
+      float d, m;
+      for (int r = 0; r < nrows; r++) { // for each row ...
+        /* calculate divisor and multiplier */
+        d = A[lead][lead];
+        m = A[r][lead] / A[lead][lead];
+        for (int c = 0; c < ncols; c++) { // for each column ...
+          if (r == lead)
+            A[r][c] /= d;               // make pivot = 1
+          else
+            A[r][c] -= A[lead][c] * m;  // make other = 0
+        }
+      }
+      lead++;
+    }
+  };
+  auto intersectionOfTwoLinesGivenFourPoints = [rowReduce](float p1[2], float p2[2], float q1[2], float q2[2]) -> float* {
+    // create matrix to represent system of equations
+    float matrix[2][3] = {
+      { (p2[0] - p1[0]) * -1, q2[0] - q1[0], p1[0] - q1[0] },
+      { (p2[1] - p1[1]) * -1, q2[1] - q1[1], p1[1] - q1[1] }
+    };
+    // convert the matrix to reduced row eschelon form
+    rowReduce(matrix);
+    // check that both solved parameters produce the same point
+    // rounding here in order to avoid idiosyncrasies from binary approx
+    cout << "------------------------------" << endl;;
+    cout << matrix[0][0] << " " << matrix[0][1] << " " << matrix[0][2] << endl;
+    cout << matrix[1][0] << " " << matrix[1][1] << " " << matrix[1][2] << endl;
+    cout << "------------------------------" << endl;;
+    return parametricLine(p1, p2, matrix[0][2]);
+    if (true
+      && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
+      && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1])) {
+      return parametricLine(p1, p2, matrix[0][2]);
+    } else {
+      cerr << "error: could not find coincident point of two lines." << endl;
+      exit(-1);
+      return p1; // default return value
+    }
+  };
+  m.lock();
+  // allocate memory for 2D array of points, hence making a 3D array
+  pitchBoardPointsAsFloats = (float***)malloc(sizeof(float**) * (pitchBoardNumberOfFrets + 1));
+  pitchBoardPoints = (unsigned int***)malloc(sizeof(unsigned int**) * (pitchBoardNumberOfFrets + 1));
+  for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+    pitchBoardPointsAsFloats[i] = (float**)malloc(sizeof(float*) * (pitchBoardNumberOfStrings + 1));
+    pitchBoardPoints[i] = (unsigned int**)malloc(sizeof(unsigned int*) * (pitchBoardNumberOfStrings + 1));
+    for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+      pitchBoardPointsAsFloats[i][j] = (float*)malloc(sizeof(float) * 2);
+      pitchBoardPoints[i][j] = (unsigned int*)malloc(sizeof(unsigned int) * 2);
+    }
+  }
+  // calculate points along horizontal boundary lines
+  for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+    // point along top horizontal line
+    pitchBoardPointsAsFloats[i][0][0] = parametricLine(nosePitchBoardUpperLeftPosition, nosePitchBoardUpperRightPosition, (float)i / (float)pitchBoardNumberOfFrets)[0];
+    pitchBoardPointsAsFloats[i][0][1] = parametricLine(nosePitchBoardUpperLeftPosition, nosePitchBoardUpperRightPosition, (float)i / (float)pitchBoardNumberOfFrets)[1];
+    // point along bottom horizontal line
+    pitchBoardPointsAsFloats[i][pitchBoardNumberOfStrings][0] = parametricLine(nosePitchBoardLowerLeftPosition, nosePitchBoardLowerRightPosition, (float)i / (float)pitchBoardNumberOfFrets)[0];
+    pitchBoardPointsAsFloats[i][pitchBoardNumberOfStrings][1] = parametricLine(nosePitchBoardLowerLeftPosition, nosePitchBoardLowerRightPosition, (float)i / (float)pitchBoardNumberOfFrets)[1];
+  }
+  // calculate points along vertical boundary lines
+  for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+    // point along left vertical line
+    pitchBoardPointsAsFloats[0][j][0] = parametricLine(nosePitchBoardUpperLeftPosition, nosePitchBoardLowerLeftPosition, (float)j / (float)pitchBoardNumberOfStrings)[0];
+    pitchBoardPointsAsFloats[0][j][1] = parametricLine(nosePitchBoardUpperLeftPosition, nosePitchBoardLowerLeftPosition, (float)j / (float)pitchBoardNumberOfStrings)[1];
+    // point along right vertical line
+    pitchBoardPointsAsFloats[pitchBoardNumberOfFrets][j][0] = parametricLine(nosePitchBoardUpperRightPosition, nosePitchBoardLowerRightPosition, (float)j / (float)pitchBoardNumberOfStrings)[0];
+    pitchBoardPointsAsFloats[pitchBoardNumberOfFrets][j][1] = parametricLine(nosePitchBoardUpperRightPosition, nosePitchBoardLowerRightPosition, (float)j / (float)pitchBoardNumberOfStrings)[1];
+  }
+
+  for (int i = 1; i < pitchBoardNumberOfFrets; i++) {
+    for (int j = 1; j < pitchBoardNumberOfStrings; j++) {
+      pitchBoardPointsAsFloats[i][j][0] = intersectionOfTwoLinesGivenFourPoints(
+        pitchBoardPointsAsFloats[i][0],
+        pitchBoardPointsAsFloats[i][pitchBoardNumberOfStrings],
+        pitchBoardPointsAsFloats[0][j],
+        pitchBoardPointsAsFloats[pitchBoardNumberOfFrets][j]
+      )[0];
+      pitchBoardPointsAsFloats[i][j][1] = intersectionOfTwoLinesGivenFourPoints(
+        pitchBoardPointsAsFloats[i][0],
+        pitchBoardPointsAsFloats[i][pitchBoardNumberOfStrings],
+        pitchBoardPointsAsFloats[0][j],
+        pitchBoardPointsAsFloats[pitchBoardNumberOfFrets][j]
+      )[1];
+    }
+  }
+  // convert all points to integers by rounding them, so they can be drawn on a canvas-like object
+  for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+    for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+      pitchBoardPoints[i][j][0] = (unsigned int)round(pitchBoardPointsAsFloats[i][j][0]);
+      pitchBoardPoints[i][j][1] = (unsigned int)round(pitchBoardPointsAsFloats[i][j][1]);
+    }
+  }
+  // allocate a cache that relates to each 'note' on the pitch board
+  pitchBoardQuadrilateralCache = (pitchBoardQuadrilateralCacheItem**)malloc(sizeof(pitchBoardQuadrilateralCacheItem*) * pitchBoardNumberOfFrets);
+  // calculate area of all of the quadrilaterals, with ranges x: [0, pitchBoardNumberOfFrets - 1], and y: [0, pitchBoardNumberOfStrings - 1]
+  for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
+    pitchBoardQuadrilateralCache[i] = (pitchBoardQuadrilateralCacheItem*)malloc(sizeof(pitchBoardQuadrilateralCacheItem) * pitchBoardNumberOfStrings);
+    for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
+      // calculate area by breaking quadrilateral into two triangles
+      // first triangle    second triangle
+      // *   *             *
+      //     *             *   *
+      pitchBoardQuadrilateralCache[i][j].area =
+        triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i + 1][j],pitchBoardPoints[i + 1][j + 1])
+        + triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i][j + 1], pitchBoardPoints[i + 1][j + 1]);
+    }
+  }
+  nosePitchBoardCalculateComplete = true;
+  m.unlock();
 }
 
 void calibration() {
@@ -243,7 +437,7 @@ void calibration() {
   m.lock();
   noseZeroCalibrated[0] = noseCurrentPosition[0];
   noseZeroCalibrated[1] = noseCurrentPosition[1];
-  noseCalibrationComplete = true;
+  noseZeroCalibrationComplete = true;
   m.unlock();
 
   cout << "##################################" << endl;
@@ -331,9 +525,151 @@ void calibration() {
   cout << "#        Position saved!         #" << endl;
   cout << "#                                #" << endl;
   cout << "##################################" << endl;
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#    Pitch Board Calibration     #" << endl;
+  cout << "#          Step 1 of 5           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Choose a location for the     #" << endl;
+  cout << "#  UPPER LEFT corner of the      #" << endl;
+  cout << "#  pitch board.                  #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+
+  m.lock();
+  nosePitchBoardUpperLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+  nosePitchBoardUpperLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+  nosePitchBoardUpperLeftComplete = true;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#    Pitch Board Calibration     #" << endl;
+  cout << "#          Step 2 of 5           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Choose a location for the     #" << endl;
+  cout << "#  UPPER RIGHT corner of the     #" << endl;
+  cout << "#  pitch board.                  #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+
+  m.lock();
+  nosePitchBoardUpperRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+  nosePitchBoardUpperRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+  nosePitchBoardUpperRightComplete = true;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#    Pitch Board Calibration     #" << endl;
+  cout << "#          Step 3 of 5           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Choose a location for the     #" << endl;
+  cout << "#  LOWER RIGHT corner of the     #" << endl;
+  cout << "#  pitch board.                  #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+
+  m.lock();
+  nosePitchBoardLowerRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+  nosePitchBoardLowerRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+  nosePitchBoardLowerRightComplete = true;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#    Pitch Board Calibration     #" << endl;
+  cout << "#          Step 4 of 5           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Choose a location for the     #" << endl;
+  cout << "#  LOWER LEFT corner of the      #" << endl;
+  cout << "#  pitch board.                  #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Press [Enter] when ready.     #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+  getchar();
+
+  m.lock();
+  nosePitchBoardLowerLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+  nosePitchBoardLowerLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+  nosePitchBoardLowerLeftComplete = true;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#    Pitch Board Calibration     #" << endl;
+  cout << "#          Step 5 of 5           #" << endl;
+  cout << "#       -----------------        #" << endl;
+  cout << "#                                #" << endl;
+  cout << "#  Input how many 'frets' to     #" << endl;
+  cout << "#  have on your pitch board.     #" << endl;
+  cout << "#  (think violin fretboard)      #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  unsigned int tmp;
+  cout << "Number of frets: ";
+  cin >> tmp;
+  m.lock();
+  pitchBoardNumberOfFrets = tmp;
+  m.unlock();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#        Position saved!         #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
+
+  calculatePitchBoardPoints();
+
+  cout << "##################################" << endl;
+  cout << "#                                #" << endl;
+  cout << "#     Calibration complete!      #" << endl;
+  cout << "#                                #" << endl;
+  cout << "##################################" << endl;
 }
 
 void midiDriver() {
+  return; // FIXME: for debug
   // initialize polyphonyCache variable
   polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
@@ -404,7 +740,6 @@ void midiDriver() {
     }
     midiMutex.unlock();
   }
-
 }
 
 int main(int argc, char** argv) {  
@@ -467,53 +802,89 @@ int main(int argc, char** argv) {
       // assume only one face is detected, because only one person will be using this
       if (!faces.empty()) {
         full_object_detection shape = sp(baseimg, faces[0]);
+
         // NOTE: for testing only
         if (false) {
           eyeTracking(&win, &matrix, &shape);
         }
+
         m.lock();
-        if (noseCalibrationComplete) {
-          for (int i = 0; i < 12; i++) {
-            double theta = ((double) i / 12.0) * 6.28 - 6.28 / 24;
-            midiMutex.lock();
-            cv::line(guiMatrix, cv::Point(noseZeroCalibrated[0], noseZeroCalibrated[1]), cv::Point(round(cos(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[0], round(sin(theta) * (double)noseDistanceMagnitude) + noseZeroCalibrated[1]), cv::Scalar(0, 0, 0));
-            midiMutex.unlock();
+        // draw a pointer directed by the nose
+        if (noseZeroCalibrationComplete) {
+          cv::circle(guiMatrix, cv::Point(noseCurrentPositionMultiplied[0], noseCurrentPositionMultiplied[1]), 1, cv::Scalar(0, 0, 255), 1);
+        } else {
+          cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 1);
+        }
+        // draw out pitch board when all necessary parameters are configured
+        if (true
+          && nosePitchBoardUpperLeftComplete
+          && nosePitchBoardUpperRightComplete
+          && nosePitchBoardLowerRightComplete
+          && nosePitchBoardLowerLeftComplete) {
+          if (nosePitchBoardCalculateComplete) {
+            // connect all outer points
+            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+              cv::line(guiMatrix,
+                  cv::Point(pitchBoardPoints[i][0][0], pitchBoardPoints[i][0][1]),
+                  cv::Point(pitchBoardPoints[i][pitchBoardNumberOfStrings][0], pitchBoardPoints[i][pitchBoardNumberOfStrings][1]),
+                  cv::Scalar(0, 0, 0));
+            }
+            for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+              cv::line(guiMatrix,
+                  cv::Point(pitchBoardPoints[0][j][0], pitchBoardPoints[0][j][1]),
+                  cv::Point(pitchBoardPoints[pitchBoardNumberOfFrets][j][0], pitchBoardPoints[pitchBoardNumberOfFrets][j][1]),
+                  cv::Scalar(0, 0, 0));
+            }
+          }
+        } else {
+          // draw specified corners of the pitch board because it's not all mapped out yet
+          if (nosePitchBoardUpperLeftComplete) {
+            cv::circle(guiMatrix, cv::Point(nosePitchBoardUpperLeftPosition[0], nosePitchBoardUpperLeftPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
+          }
+          if (nosePitchBoardUpperRightComplete) {
+            cv::circle(guiMatrix, cv::Point(nosePitchBoardUpperRightPosition[0], nosePitchBoardUpperRightPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
+          }
+          if (nosePitchBoardLowerRightComplete) {
+            cv::circle(guiMatrix, cv::Point(nosePitchBoardLowerRightPosition[0], nosePitchBoardLowerRightPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
+          }
+          if (nosePitchBoardLowerLeftComplete) {
+            cv::circle(guiMatrix, cv::Point(nosePitchBoardLowerLeftPosition[0], nosePitchBoardLowerLeftPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
           }
         }
         m.unlock();
-        std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
         m.lock();
         int guiMatrixWidth = guiMatrix.cols;
         int guiMatrixHeight = guiMatrix.rows;
-        cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 1);
         cv::line(guiMatrix,
-            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
-            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix,
-            cv::Point(guiMatrixWidth - 1, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
-            cv::Point(guiMatrixWidth - 1 - 5, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (double)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1 - 5, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
-            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
+            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
+            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
             cv::Scalar(0, 0, 0),
             2);
         cv::line(guiMatrix, 
-            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
-            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (double)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
+            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
+            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
             cv::Scalar(0, 0, 0),
             2);
         m.unlock();
-        std::chrono::high_resolution_clock::time_point t2 = std::chrono::high_resolution_clock::now();
-        cout << "latency: " << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << "us" << endl;
 
         // capture nose position
         m.lock();
         noseCurrentPosition[0] = shape.part(31-1).x();
         noseCurrentPosition[1] = shape.part(31-1).y();
+        if (noseZeroCalibrationComplete) {
+          noseCurrentPositionMultiplied[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+          noseCurrentPositionMultiplied[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+        }
         // capture mouth dimensions
         mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
         mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
@@ -522,7 +893,7 @@ int main(int argc, char** argv) {
         cv_image<bgr_pixel> guiImg(guiMatrix);
         win.clear_overlay();
         if (true
-          && noseCalibrationComplete
+          && noseZeroCalibrationComplete
           && mouthCalibrationClosedComplete
           && mouthCalibrationOpenUpDownComplete
           && mouthCalibrationOpenRightLeftComplete) {
