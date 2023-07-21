@@ -67,7 +67,6 @@ int nosePitchBoardLowerRightPosition[2];
 int nosePitchBoardLowerLeftPosition[2];
 unsigned int pitchBoardNumberOfStrings = 4;
 unsigned int pitchBoardNumberOfFrets;
-bool TEMPpitchBoardLatticeCalculated = false;
 float*** pitchBoardPointsAsFloats;
 unsigned int*** pitchBoardPoints;
 struct pitchBoardQuadrilateralCacheItem {
@@ -80,7 +79,7 @@ bool midiPlaying;
 bool mouthOpen;
 float mouthOpenPercentage;
 float mouthWidePercentage;
-unsigned int scaleDegree;
+unsigned int midiNoteToPlay;
 unsigned int noseDistanceMagnitude;
 
 unsigned int polyphonyCacheSize = 6;
@@ -119,62 +118,6 @@ float triangleArea(unsigned int p1[], unsigned int p2[], unsigned int p3[]) {
   return triangleArea((int)p1[0], (int)p1[1], (int)p2[0], (int)p2[1], (int)p3[0], p3[1]);
 }
 
-// stab at seeing if eye tracking was a viable option for getting information. Turns out, it was not. At least, for now.
-void eyeTracking(dlib::image_window* win, cv::Mat* mat, dlib::full_object_detection* shape) {
-  cv::Size matrixSize = mat->size();
-  int matrixType = mat->type();
-  // mask used to block out area where eyes are located
-  cv::Mat eyeMaskMatrix = cv::Mat::zeros(matrixSize, matrixType);
-  std::vector<cv::Point> leftEyePoints = {
-    cv::Point(shape->part(37 - 1).x(), shape->part(37 - 1).y()),
-    cv::Point(shape->part(38 - 1).x(), shape->part(38 - 1).y()),
-    cv::Point(shape->part(39 - 1).x(), shape->part(39 - 1).y()),
-    cv::Point(shape->part(40 - 1).x(), shape->part(40 - 1).y()),
-    cv::Point(shape->part(41 - 1).x(), shape->part(41 - 1).y()),
-    cv::Point(shape->part(42 - 1).x(), shape->part(42 - 1).y()),
-  };
-  std::vector<cv::Point> rightEyePoints = {
-    cv::Point(shape->part(43 - 1).x(), shape->part(43 - 1).y()),
-    cv::Point(shape->part(44 - 1).x(), shape->part(44 - 1).y()),
-    cv::Point(shape->part(45 - 1).x(), shape->part(45 - 1).y()),
-    cv::Point(shape->part(46 - 1).x(), shape->part(46 - 1).y()),
-    cv::Point(shape->part(47 - 1).x(), shape->part(47 - 1).y()),
-    cv::Point(shape->part(48 - 1).x(), shape->part(48 - 1).y())
-  };
-  // use points from dlib's detection to fill in black polygons where eyes are
-  cv::fillConvexPoly(eyeMaskMatrix, leftEyePoints, cv::Scalar(255, 255, 255));
-  cv::fillConvexPoly(eyeMaskMatrix, rightEyePoints, cv::Scalar(255, 255, 255));
-  // 'kernel' used for erosion/dilation algorithm
-  cv::Mat kernel = cv::Mat::ones(5, 5, matrixType);
-  // use image dilation to expand the borders of the eye regions
-  cv::dilate(eyeMaskMatrix, eyeMaskMatrix, kernel);
-
-  // used to overlay at the end to allow opencv to find contours better within the eye shapes
-  cv::Mat eyeBoundaryMatrix = eyeMaskMatrix.clone();
-  cv::Mat eyeBoundaryInnerMatrix = eyeMaskMatrix.clone();
-  cv::erode(eyeBoundaryInnerMatrix, eyeBoundaryInnerMatrix, cv::Mat());
-  cv::bitwise_xor(eyeBoundaryMatrix, eyeBoundaryInnerMatrix, eyeBoundaryMatrix, eyeMaskMatrix);
-  cv::bitwise_not(eyeBoundaryMatrix, eyeBoundaryMatrix);
-
-  // matrix of actual eyes in image
-  cv::Mat eyesMatrix = cv::Mat::zeros(matrixSize, matrixType);
-  // get a cropping of just the eyes using the masking and output it to eyeMatrix
-  cv::bitwise_and(*mat, *mat, eyesMatrix, eyeMaskMatrix);
-  // find mean of values in BW eyesMatrix
-  cv::Scalar eyesMatrixMean = cv::mean(eyesMatrix, eyeMaskMatrix);
-  // use threshold value to be a function of eyesMatrixMean in order to make it responsive to lighting changes
-  unsigned char threshold = floor(eyesMatrixMean[0]) - 10;
-  cv::threshold(eyesMatrix, eyesMatrix, threshold, 255, cv::THRESH_BINARY_INV);
-  cv::Mat pupilKernel = cv::Mat::ones(3, 3, matrixType);
-  cv::erode(eyesMatrix, eyesMatrix, pupilKernel); // shave off imperfections
-  // cv::dilate(eyesMatrix, eyesMatrix, cv::Mat()); // blow up smoother shapes
-
-  cv::bitwise_and(eyeBoundaryMatrix, eyesMatrix, eyesMatrix);
-  // { deletable
-  opencvShowGrayscaleMatrix(win, &eyesMatrix);
-  // } deletable
-}
-
 void interpretFacialData() {
   // wait for calibration before running
   while (true) {
@@ -201,7 +144,6 @@ void interpretFacialData() {
     }
   };
   while (true) {
-    // FIXME: determine which note to play
     bool boundingBoxFound = false;
     for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
       if (boundingBoxFound)
@@ -237,7 +179,8 @@ void interpretFacialData() {
               (int)pitchBoardPoints[i][j][0],
               (int)pitchBoardPoints[i][j][1]);
         if (quadrilateralAreaToCompare == pitchBoardQuadrilateralCache[i][j].area) {
-          cout << "(" << i << ", " << j << ")" << endl;
+          midiNoteToPlay = pitchBoardQuadrilateralCache[i][j].midiNote;
+          cout << "midiNote: " << ((int)pitchBoardQuadrilateralCache[i][j].midiNote) << endl;
           boundingBoxFound = true;
         }
       }
@@ -373,10 +316,15 @@ void calculatePitchBoardPoints() {
   }
   // allocate a cache that relates to each 'note' on the pitch board
   pitchBoardQuadrilateralCache = (pitchBoardQuadrilateralCacheItem**)malloc(sizeof(pitchBoardQuadrilateralCacheItem*) * pitchBoardNumberOfFrets);
-  // calculate area of all of the quadrilaterals, with ranges x: [0, pitchBoardNumberOfFrets - 1], and y: [0, pitchBoardNumberOfStrings - 1]
   for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
     pitchBoardQuadrilateralCache[i] = (pitchBoardQuadrilateralCacheItem*)malloc(sizeof(pitchBoardQuadrilateralCacheItem) * pitchBoardNumberOfStrings);
-    for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
+  }
+  // calculate area of all of the quadrilaterals, with ranges x: [0, pitchBoardNumberOfFrets - 1], and y: [0, pitchBoardNumberOfStrings - 1]
+  // calculate what the midi note that would be played for each quadrilateral
+  int midiCounter = 0;
+  unsigned char G3Midi = 55;
+  for (int j = pitchBoardNumberOfStrings - 1; j >= 0; j--) {
+    for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
       // calculate area by breaking quadrilateral into two triangles
       // first triangle    second triangle
       // *   *             *
@@ -384,6 +332,8 @@ void calculatePitchBoardPoints() {
       pitchBoardQuadrilateralCache[i][j].area =
         triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i + 1][j],pitchBoardPoints[i + 1][j + 1])
         + triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i][j + 1], pitchBoardPoints[i + 1][j + 1]);
+      pitchBoardQuadrilateralCache[i][j].midiNote = G3Midi + midiCounter;
+      midiCounter++;
     }
   }
   nosePitchBoardCalculateComplete = true;
@@ -701,11 +651,25 @@ void midiDriver() {
   std::chrono::high_resolution_clock::time_point timePoint;
   unsigned int polyphonyCacheIndex = 0;
   while (true) {
+    m.lock();
+    if (true
+      && noseZeroCalibrationComplete
+      && nosePitchBoardCalculateComplete
+      && mouthCalibrationClosedComplete
+      && mouthCalibrationOpenUpDownComplete
+      && mouthCalibrationOpenRightLeftComplete) {
+      m.unlock();
+      break;
+    }
+    m.unlock();
+    std::this_thread::sleep_for(100ms);
+  }
+  while (true) {
     midiMutex.lock();
     if (false) {
     } else if (mouthOpen && !midiPlaying) {
       channel = 1;
-      note = 60 + scaleDegree;
+      note = midiNoteToPlay;
       velocity = round(127 * (1.0 - mouthWidePercentage));
       timePoint = std::chrono::high_resolution_clock::now();
       // FIXME: polyphony
@@ -719,7 +683,7 @@ void midiDriver() {
       polyphonyCacheIndex = (polyphonyCacheIndex + 1) % polyphonyCacheSize;
     } else if (!mouthOpen && midiPlaying) {
       channel = 1;
-      note = 60 + scaleDegree;
+      note = midiNoteToPlay;
       velocity = 127;
       for (int i = 0; i < polyphonyCacheSize; i++) {
         if (polyphonyCache[i].note == note) {
@@ -802,11 +766,6 @@ int main(int argc, char** argv) {
       // assume only one face is detected, because only one person will be using this
       if (!faces.empty()) {
         full_object_detection shape = sp(baseimg, faces[0]);
-
-        // NOTE: for testing only
-        if (false) {
-          eyeTracking(&win, &matrix, &shape);
-        }
 
         m.lock();
         // draw a pointer directed by the nose
