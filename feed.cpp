@@ -158,8 +158,7 @@ void interpretFacialData() {
           break;
         // quadrilateral area using center point
         float quadrilateralAreaToCompare =
-          triangleArea(
-              noseCurrentPositionMultiplied[0],
+          triangleArea(noseCurrentPositionMultiplied[0],
               noseCurrentPositionMultiplied[1],
               (int)pitchBoardPoints[i][j][0],
               (int)pitchBoardPoints[i][j][1],
@@ -184,13 +183,20 @@ void interpretFacialData() {
               (int)pitchBoardPoints[i][j][0],
               (int)pitchBoardPoints[i][j][1]);
         if (quadrilateralAreaToCompare == pitchBoardQuadrilateralCache[i][j].area) {
+          midiMutex.lock();
           midiNoteToPlay = pitchBoardQuadrilateralCache[i][j].midiNote;
+          midiMutex.unlock();
           boundingBoxFound = true;
         }
       }
     }
     // handle mouth dimensions
     m.lock();
+    mouthWidePercentage = percentageNormalize((float)(
+        (float)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
+        /
+        (float)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
+    ));
     if (mouthOuterLipUpDownCurrentDistance > mouthOuterLipUpDownClosedDistanceCalibrated) {
       midiMutex.lock();
       mouthOpen = true;
@@ -199,15 +205,11 @@ void interpretFacialData() {
           /
           (float)((mouthOuterLipUpDownOpenDistanceCalibrated - mouthOuterLipUpDownClosedDistanceCalibrated + mouthInnerLipUpDownOpenDistanceCalibrated - mouthInnerLipUpDownClosedDistanceCalibrated) / 2.0)
       ));
-      mouthWidePercentage = percentageNormalize((float)(
-          (float)((mouthOuterLipRightLeftCurrentDistance - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftCurrentDistance - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
-          /
-          (float)((mouthOuterLipRightLeftOpenDistanceCalibrated - mouthOuterLipRightLeftClosedDistanceCalibrated + mouthInnerLipRightLeftOpenDistanceCalibrated - mouthInnerLipRightLeftClosedDistanceCalibrated) / 2.0)
-      ));
       midiMutex.unlock();
     } else {
       midiMutex.lock();
       mouthOpen = false;
+      mouthOpenPercentage = 0.0;
       midiMutex.unlock();
     }
     m.unlock();
@@ -217,7 +219,6 @@ void interpretFacialData() {
 void calculatePitchBoardPoints() {
   // calculate reduced row eschelon form.
   // Stolen from: https://stackoverflow.com/questions/31756413/solving-a-simple-matrix-in-row-reduced-form-in-c
-  // FIXME
   auto rowReduce = [](float A[2][3]) {
     float res[2][3];
     const int nrows = 2;
@@ -347,13 +348,19 @@ void tuiRenderer() {
         ftxui::vbox({
             ftxui::filler(),
             ftxui::hbox({
+                ftxui::filler(),
                 ftxui::vbox({
-                  ftxui::text(tuiRendererHeaderString) | ftxui::bold | ftxui::border,
-                  ftxui::separator(),
-                  ftxui::vbox({
-                    ftxui::text(tuiRendererBodyString) | ftxui::border,
+                  ftxui::hbox({
+                    ftxui::filler(),
+                    ftxui::text(tuiRendererHeaderString) | ftxui::bold,
+                    ftxui::filler(),
                   }),
-                }),
+                  ftxui::separator(),
+                  ftxui::hbox({
+                    ftxui::paragraph(tuiRendererBodyString),
+                  }),
+                }) | ftxui::border,
+                ftxui::filler(),
             }),
             ftxui::filler(),
         });
@@ -563,21 +570,36 @@ void midiDriver() {
   }
   while (true) {
     midiMutex.lock();
+    bool debounceIgnoreNote = false;
     if (false) {
     } else if (mouthOpen && !midiPlaying) {
       channel = 1;
       note = midiNoteToPlay;
       velocity = round(127 * (1.0 - mouthWidePercentage));
       timePoint = std::chrono::high_resolution_clock::now();
-      // FIXME: polyphony
-      if (polyphonyCache[polyphonyCacheIndex].note == note) {
-        midi.send_message(libremidi::message::note_off(channel, note, velocity));
+      // debounce input for this note
+      for (int i = 0; i < polyphonyCacheSize; i++) {
+        if (polyphonyCache[i].note == note) {
+          if (std::chrono::duration_cast<std::chrono::milliseconds>(timePoint - polyphonyCache[i].entryTime).count() > 80) {
+            // if last time played is above debounce threshold, turn note off so it can be played again
+            if (polyphonyCache[polyphonyCacheIndex].note == note) {
+              midi.send_message(libremidi::message::note_off(channel, note, velocity));
+            }
+          } else {
+            // if last time played is less than/equal to debounce threshold, ignore this event
+            debounceIgnoreNote = true;
+          }
+          break;
+        }
       }
-      polyphonyCache[polyphonyCacheIndex].note = note;
-      polyphonyCache[polyphonyCacheIndex].entryTime = timePoint;
-      midi.send_message(libremidi::message::note_on(channel, note, velocity));
-      midiPlaying = true;
-      polyphonyCacheIndex = (polyphonyCacheIndex + 1) % polyphonyCacheSize;
+      if (!debounceIgnoreNote) {
+        polyphonyCache[polyphonyCacheIndex].note = note;
+        polyphonyCache[polyphonyCacheIndex].entryTime = timePoint;
+        midi.send_message(libremidi::message::note_on(channel, note, velocity));
+        midiPlaying = true;
+        polyphonyCacheIndex = (polyphonyCacheIndex + 1) % polyphonyCacheSize;
+        debounceIgnoreNote = false;
+      }
     } else if (!mouthOpen && midiPlaying) {
       channel = 1;
       note = midiNoteToPlay;
@@ -678,7 +700,7 @@ int main(int argc, char** argv) {
           && nosePitchBoardLowerRightComplete
           && nosePitchBoardLowerLeftComplete) {
           if (nosePitchBoardCalculateComplete) {
-            // draw all points
+            // FIXME: DEBUG draw all points
             for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
               for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
                 cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 0), 2);
