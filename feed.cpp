@@ -13,7 +13,12 @@
 #include <math.h>
 #include <chrono>
 #include <ctime>
+#include <memory>
 #include <libremidi/libremidi.hpp>
+#include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/screen.hpp>
+#include "ftxui/dom/node.hpp"
+#include "ftxui/screen/color.hpp"
 
 using namespace dlib;
 using namespace std;
@@ -26,24 +31,24 @@ static const bool isDebug = false;
 
 std::mutex m;
 std::mutex midiMutex;
+std::mutex tuiMutex;
 
 const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
 
 bool calibrationGreenLight = false;
-
 bool noseZeroCalibrationComplete = false;
-
 bool mouthCalibrationClosedComplete = false;
 bool mouthCalibrationOpenUpDownComplete = false;
 bool mouthCalibrationOpenRightLeftComplete = false;
-
 bool nosePitchBoardUpperLeftComplete = false;
 bool nosePitchBoardUpperRightComplete = false;
 bool nosePitchBoardLowerRightComplete = false;
 bool nosePitchBoardLowerLeftComplete = false;
-
 bool nosePitchBoardCalculateComplete = false;
+
+string tuiRendererHeaderString;
+string tuiRendererBodyString;
 
 unsigned int noseSensitivity = 2; // sensitivity multiplier to nose pointer position (because nose is fairly accurate, it can be increased in sensitivity)
 int noseCurrentPosition[2];
@@ -180,7 +185,6 @@ void interpretFacialData() {
               (int)pitchBoardPoints[i][j][1]);
         if (quadrilateralAreaToCompare == pitchBoardQuadrilateralCache[i][j].area) {
           midiNoteToPlay = pitchBoardQuadrilateralCache[i][j].midiNote;
-          cout << "midiNote: " << ((int)pitchBoardQuadrilateralCache[i][j].midiNote) << endl;
           boundingBoxFound = true;
         }
       }
@@ -245,10 +249,6 @@ void calculatePitchBoardPoints() {
     rowReduce(matrix);
     // check that both solved parameters produce the same point
     // rounding here in order to avoid idiosyncrasies from binary approx
-    cout << "------------------------------" << endl;;
-    cout << matrix[0][0] << " " << matrix[0][1] << " " << matrix[0][2] << endl;
-    cout << matrix[1][0] << " " << matrix[1][1] << " " << matrix[1][2] << endl;
-    cout << "------------------------------" << endl;;
     return parametricLine(p1, p2, matrix[0][2]);
     if (true
       && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
@@ -340,7 +340,34 @@ void calculatePitchBoardPoints() {
   m.unlock();
 }
 
+void tuiRenderer() {
+  while (true) {
+    tuiMutex.lock();
+    auto document =
+        ftxui::vbox({
+            ftxui::filler(),
+            ftxui::hbox({
+                ftxui::vbox({
+                  ftxui::text(tuiRendererHeaderString) | ftxui::bold | ftxui::border,
+                  ftxui::separator(),
+                  ftxui::vbox({
+                    ftxui::text(tuiRendererBodyString) | ftxui::border,
+                  }),
+                }),
+            }),
+            ftxui::filler(),
+        });
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Full());
+    ftxui::Render(screen, document);
+    screen.Print();
+    tuiMutex.unlock();
+    std::this_thread::sleep_for(500ms);
+    // FIXME:  Input(&last_name, "last name");
+  }
+}
+
 void calibration() {
+  std::thread thread_tuiRenderer(tuiRenderer);
   int N = 100;
   int measurements[N];
   int acc;
@@ -369,19 +396,10 @@ void calibration() {
     m.unlock();
     std::this_thread::sleep_for(100ms);
   }
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Nose Calibration        #" << endl;
-  cout << "#        ----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Please put your nose in the   #" << endl;
-  cout << "#  center of the screen in       #" << endl;
-  cout << "#  order to calibrate the center #" << endl;
-  cout << "#  of your pitch wheel.          #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Nose Calibration");
+  tuiRendererBodyString = std::string("Please put your nose in the center of the screen in order to calibrate the center of where your face will be.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   m.lock();
@@ -390,24 +408,10 @@ void calibration() {
   noseZeroCalibrationComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Mouth Calibration        #" << endl;
-  cout << "#          Step 1 of 3           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Please close your mouth       #" << endl;
-  cout << "#  in relaxed manner.            #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Mouth Calibration (1/3)");
+  tuiRendererBodyString = std::string("Please close your mouth in a relaxed manner.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
@@ -418,24 +422,10 @@ void calibration() {
   mouthCalibrationClosedComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Mouth Calibration        #" << endl;
-  cout << "#          Step 2 of 3           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Please open your mouth        #" << endl;
-  cout << "#  as if you were yawning.       #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Mouth Calibration (2/3)");
+  tuiRendererBodyString = std::string("Please open your mouth as if you were yawning.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
@@ -444,24 +434,10 @@ void calibration() {
   mouthCalibrationOpenUpDownComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#       Mouth Calibration        #" << endl;
-  cout << "#          Step 3 of 3           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Please smile widely           #" << endl;
-  cout << "#  without opening your mouth.   #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Mouth Calibration (3/3)");
+  tuiRendererBodyString = std::string("Please smile widely without opening your mouth.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
@@ -470,25 +446,10 @@ void calibration() {
   mouthCalibrationOpenRightLeftComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#    Pitch Board Calibration     #" << endl;
-  cout << "#          Step 1 of 5           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Choose a location for the     #" << endl;
-  cout << "#  UPPER LEFT corner of the      #" << endl;
-  cout << "#  pitch board.                  #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Pitch Board Calibration (1/5)");
+  tuiRendererBodyString = std::string("Choose a location for the UPPER LEFT corner of the pitch board using your nose.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   m.lock();
@@ -497,25 +458,10 @@ void calibration() {
   nosePitchBoardUpperLeftComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#    Pitch Board Calibration     #" << endl;
-  cout << "#          Step 2 of 5           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Choose a location for the     #" << endl;
-  cout << "#  UPPER RIGHT corner of the     #" << endl;
-  cout << "#  pitch board.                  #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Pitch Board Calibration (2/5)");
+  tuiRendererBodyString = std::string("Choose a location for the UPPER RIGHT corner of the pitch board using your nose.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   m.lock();
@@ -524,25 +470,10 @@ void calibration() {
   nosePitchBoardUpperRightComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#    Pitch Board Calibration     #" << endl;
-  cout << "#          Step 3 of 5           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Choose a location for the     #" << endl;
-  cout << "#  LOWER RIGHT corner of the     #" << endl;
-  cout << "#  pitch board.                  #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Pitch Board Calibration (3/5)");
+  tuiRendererBodyString = std::string("Choose a location for the LOWER RIGHT corner of the pitch board using your nose.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   m.lock();
@@ -551,25 +482,10 @@ void calibration() {
   nosePitchBoardLowerRightComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#    Pitch Board Calibration     #" << endl;
-  cout << "#          Step 4 of 5           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Choose a location for the     #" << endl;
-  cout << "#  LOWER LEFT corner of the      #" << endl;
-  cout << "#  pitch board.                  #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Press [Enter] when ready.     #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Pitch Board Calibration (4/5)");
+  tuiRendererBodyString = std::string("Choose a location for the LOWER LEFT corner of the pitch board using your nose.\nPress [Enter] when ready.");
+  tuiMutex.unlock();
   getchar();
 
   m.lock();
@@ -578,48 +494,29 @@ void calibration() {
   nosePitchBoardLowerLeftComplete = true;
   m.unlock();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#    Pitch Board Calibration     #" << endl;
-  cout << "#          Step 5 of 5           #" << endl;
-  cout << "#       -----------------        #" << endl;
-  cout << "#                                #" << endl;
-  cout << "#  Input how many 'frets' to     #" << endl;
-  cout << "#  have on your pitch board.     #" << endl;
-  cout << "#  (think violin fretboard)      #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Pitch Board Calibration (5/5)");
+  tuiRendererBodyString = std::string("Input how many 'frets' to have on your pitch board. (think violin fretboard)\nPress [Enter] when ready.");
+  tuiMutex.unlock();                   
 
   unsigned int tmp;
   cout << "Number of frets: ";
-  cin >> tmp;
+  // FIXME: cin >> tmp;
   m.lock();
-  pitchBoardNumberOfFrets = tmp;
+  pitchBoardNumberOfFrets = /*tmp*/ 7; // FIXME
   m.unlock();
-
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#        Position saved!         #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
 
   calculatePitchBoardPoints();
 
-  cout << "##################################" << endl;
-  cout << "#                                #" << endl;
-  cout << "#     Calibration complete!      #" << endl;
-  cout << "#                                #" << endl;
-  cout << "##################################" << endl;
+  tuiMutex.lock();
+  tuiRendererHeaderString = std::string("Calibration Complete!!");
+  tuiRendererBodyString = std::string(":)");
+  tuiMutex.unlock();                   
+
+  thread_tuiRenderer.join();
 }
 
 void midiDriver() {
-  return; // FIXME: for debug
   // initialize polyphonyCache variable
   polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
@@ -781,6 +678,12 @@ int main(int argc, char** argv) {
           && nosePitchBoardLowerRightComplete
           && nosePitchBoardLowerLeftComplete) {
           if (nosePitchBoardCalculateComplete) {
+            // draw all points
+            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 0), 2);
+              }
+            }
             // connect all outer points
             for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
               cv::line(guiMatrix,
@@ -817,22 +720,22 @@ int main(int argc, char** argv) {
         cv::line(guiMatrix,
             cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
             cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Scalar(0, 0, 0),
+            cv::Scalar(100, 100, 100),
             2);
         cv::line(guiMatrix,
-            cv::Point(guiMatrixWidth - 1, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Point(guiMatrixWidth - 1 - 5, round(capPropFrameHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Scalar(0, 0, 0),
+            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
+            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
+            cv::Scalar(100, 100, 100),
             2);
         cv::line(guiMatrix, 
             cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
             cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
-            cv::Scalar(0, 0, 0),
+            cv::Scalar(100, 100, 100),
             2);
         cv::line(guiMatrix, 
             cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
             cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
-            cv::Scalar(0, 0, 0),
+            cv::Scalar(100, 100, 100),
             2);
         m.unlock();
 

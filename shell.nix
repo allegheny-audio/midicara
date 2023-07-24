@@ -27,6 +27,7 @@ mkShell {
     libremidi
     alsa-lib
     valgrind
+    ftxui
   ];
   nativeBuildInputs = [
     bzip2
