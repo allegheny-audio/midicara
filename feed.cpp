@@ -700,12 +700,6 @@ int main(int argc, char** argv) {
           && nosePitchBoardLowerRightComplete
           && nosePitchBoardLowerLeftComplete) {
           if (nosePitchBoardCalculateComplete) {
-            // FIXME: DEBUG draw all points
-            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
-              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
-                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 0), 2);
-              }
-            }
             // connect all outer points
             for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
               cv::line(guiMatrix,
@@ -718,6 +712,12 @@ int main(int argc, char** argv) {
                   cv::Point(pitchBoardPoints[0][j][0], pitchBoardPoints[0][j][1]),
                   cv::Point(pitchBoardPoints[pitchBoardNumberOfFrets][j][0], pitchBoardPoints[pitchBoardNumberOfFrets][j][1]),
                   cv::Scalar(0, 0, 0));
+            }
+            // FIXME: DEBUG draw all points
+            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 100), 1);
+              }
             }
           }
         } else {
