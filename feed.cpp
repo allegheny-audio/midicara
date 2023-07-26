@@ -15,10 +15,14 @@
 #include <ctime>
 #include <memory>
 #include <libremidi/libremidi.hpp>
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/screen.hpp>
+#include "ftxui/component/captured_mouse.hpp"
+#include "ftxui/component/component.hpp"
+#include "ftxui/component/component_base.hpp"
+#include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/node.hpp"
 #include "ftxui/screen/color.hpp"
+#include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/screen.hpp>
 
 using namespace dlib;
 using namespace std;
@@ -35,6 +39,8 @@ std::mutex tuiMutex;
 
 const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
+unsigned int guiMatrixWidth = 100;
+unsigned int guiMatrixHeight = 100;
 
 bool calibrationGreenLight = false;
 bool noseZeroCalibrationComplete = false;
@@ -74,11 +80,7 @@ unsigned int pitchBoardNumberOfStrings = 4;
 unsigned int pitchBoardNumberOfFrets;
 float*** pitchBoardPointsAsFloats;
 unsigned int*** pitchBoardPoints;
-struct pitchBoardQuadrilateralCacheItem {
-  float area;
-  unsigned char midiNote;
-};
-pitchBoardQuadrilateralCacheItem** pitchBoardQuadrilateralCache;
+unsigned char** pixelMidiNoteCache;
 
 bool midiPlaying;
 bool mouthOpen;
@@ -149,47 +151,10 @@ void interpretFacialData() {
     }
   };
   while (true) {
-    bool boundingBoxFound = false;
-    for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
-      if (boundingBoxFound)
-        break;
-      for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
-        if (boundingBoxFound)
-          break;
-        // quadrilateral area using center point
-        float quadrilateralAreaToCompare =
-          triangleArea(noseCurrentPositionMultiplied[0],
-              noseCurrentPositionMultiplied[1],
-              (int)pitchBoardPoints[i][j][0],
-              (int)pitchBoardPoints[i][j][1],
-              (int)pitchBoardPoints[i+1][j][0],
-              (int)pitchBoardPoints[i+1][j][1])
-          + triangleArea(noseCurrentPositionMultiplied[0],
-              noseCurrentPositionMultiplied[1],
-              (int)pitchBoardPoints[i+1][j][0],
-              (int)pitchBoardPoints[i+1][j][1],
-              (int)pitchBoardPoints[i+1][j+1][0],
-              (int)pitchBoardPoints[i+1][j+1][1])
-          + triangleArea(noseCurrentPositionMultiplied[0],
-              noseCurrentPositionMultiplied[1],
-              (int)pitchBoardPoints[i+1][j+1][0],
-              (int)pitchBoardPoints[i+1][j+1][1],
-              (int)pitchBoardPoints[i][j+1][0],
-              (int)pitchBoardPoints[i][j+1][1])
-          + triangleArea(noseCurrentPositionMultiplied[0],
-              noseCurrentPositionMultiplied[1],
-              (int)pitchBoardPoints[i][j+1][0],
-              (int)pitchBoardPoints[i][j+1][1],
-              (int)pitchBoardPoints[i][j][0],
-              (int)pitchBoardPoints[i][j][1]);
-        if (quadrilateralAreaToCompare == pitchBoardQuadrilateralCache[i][j].area) {
-          midiMutex.lock();
-          midiNoteToPlay = pitchBoardQuadrilateralCache[i][j].midiNote;
-          midiMutex.unlock();
-          boundingBoxFound = true;
-        }
-      }
-    }
+    midiMutex.lock();
+    midiNoteToPlay = pixelMidiNoteCache[noseCurrentPositionMultiplied[0]][noseCurrentPositionMultiplied[1]];
+    midiMutex.unlock();
+
     // handle mouth dimensions
     m.lock();
     mouthWidePercentage = percentageNormalize((float)(
@@ -250,13 +215,12 @@ void calculatePitchBoardPoints() {
     rowReduce(matrix);
     // check that both solved parameters produce the same point
     // rounding here in order to avoid idiosyncrasies from binary approx
-    return parametricLine(p1, p2, matrix[0][2]);
     if (true
       && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
       && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1])) {
       return parametricLine(p1, p2, matrix[0][2]);
     } else {
-      cerr << "error: could not find coincident point of two lines." << endl;
+      cerr << "WARNING: could not find coincident point of two lines." << endl;
       exit(-1);
       return p1; // default return value
     }
@@ -315,26 +279,80 @@ void calculatePitchBoardPoints() {
       pitchBoardPoints[i][j][1] = (unsigned int)round(pitchBoardPointsAsFloats[i][j][1]);
     }
   }
+  unsigned char** pitchBoardMidiNoteCache;
   // allocate a cache that relates to each 'note' on the pitch board
-  pitchBoardQuadrilateralCache = (pitchBoardQuadrilateralCacheItem**)malloc(sizeof(pitchBoardQuadrilateralCacheItem*) * pitchBoardNumberOfFrets);
+  pitchBoardMidiNoteCache = (unsigned char**)malloc(sizeof(unsigned char*) * pitchBoardNumberOfFrets);
   for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
-    pitchBoardQuadrilateralCache[i] = (pitchBoardQuadrilateralCacheItem*)malloc(sizeof(pitchBoardQuadrilateralCacheItem) * pitchBoardNumberOfStrings);
+    pitchBoardMidiNoteCache[i] = (unsigned char*)malloc(sizeof(unsigned char) * pitchBoardNumberOfStrings);
   }
-  // calculate area of all of the quadrilaterals, with ranges x: [0, pitchBoardNumberOfFrets - 1], and y: [0, pitchBoardNumberOfStrings - 1]
   // calculate what the midi note that would be played for each quadrilateral
   int midiCounter = 0;
   unsigned char G3Midi = 55;
   for (int j = pitchBoardNumberOfStrings - 1; j >= 0; j--) {
     for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
-      // calculate area by breaking quadrilateral into two triangles
-      // first triangle    second triangle
-      // *   *             *
-      //     *             *   *
-      pitchBoardQuadrilateralCache[i][j].area =
-        triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i + 1][j],pitchBoardPoints[i + 1][j + 1])
-        + triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i][j + 1], pitchBoardPoints[i + 1][j + 1]);
-      pitchBoardQuadrilateralCache[i][j].midiNote = G3Midi + midiCounter;
+      pitchBoardMidiNoteCache[i][j] = G3Midi + midiCounter;
       midiCounter++;
+    }
+  }
+  // store mapping between pixel and midi note to play to avoid calculations on-the-fly
+  pixelMidiNoteCache = (unsigned char**)malloc(sizeof(unsigned char*) * guiMatrixWidth);
+  for (int i = 0; i < guiMatrixWidth; i++) {
+    pixelMidiNoteCache[i] = (unsigned char*)malloc(sizeof(unsigned char) * guiMatrixHeight);
+  }
+  for (int u = 0; u < guiMatrixWidth; u++) {
+    for (int v = 0; v < guiMatrixHeight; v++) {
+      // determine and cache which part of the pitchBoardMidiNoteCache this pixel belongs to
+      bool boundingBoxFound = false;
+      for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
+        if (boundingBoxFound)
+          break;
+        for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
+          if (boundingBoxFound)
+            break;
+          // calculate area by breaking quadrilateral into two triangles
+          // first triangle    second triangle
+          // *   *             *
+          //     *             *   *
+          float areaOfCurrentPitchBoardQuadrilateral =
+            triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i + 1][j],pitchBoardPoints[i + 1][j + 1])
+            + triangleArea(pitchBoardPoints[i][j], pitchBoardPoints[i][j + 1], pitchBoardPoints[i + 1][j + 1]);
+          // quadrilateral area using point in question
+          // broken up into four triangles and summed
+          float quadrilateralAreaToCompare =
+            triangleArea(
+                u,
+                v,
+                (int)pitchBoardPoints[i][j][0],
+                (int)pitchBoardPoints[i][j][1],
+                (int)pitchBoardPoints[i+1][j][0],
+                (int)pitchBoardPoints[i+1][j][1])
+            + triangleArea(
+                u,
+                v,
+                (int)pitchBoardPoints[i+1][j][0],
+                (int)pitchBoardPoints[i+1][j][1],
+                (int)pitchBoardPoints[i+1][j+1][0],
+                (int)pitchBoardPoints[i+1][j+1][1])
+            + triangleArea(
+                u,
+                v,
+                (int)pitchBoardPoints[i+1][j+1][0],
+                (int)pitchBoardPoints[i+1][j+1][1],
+                (int)pitchBoardPoints[i][j+1][0],
+                (int)pitchBoardPoints[i][j+1][1])
+            + triangleArea(
+                u,
+                v,
+                (int)pitchBoardPoints[i][j+1][0],
+                (int)pitchBoardPoints[i][j+1][1],
+                (int)pitchBoardPoints[i][j][0],
+                (int)pitchBoardPoints[i][j][1]);
+          if (quadrilateralAreaToCompare == areaOfCurrentPitchBoardQuadrilateral) {
+            pixelMidiNoteCache[u][v] = pitchBoardMidiNoteCache[i][j];
+            boundingBoxFound = true;
+          }
+        }
+      }
     }
   }
   nosePitchBoardCalculateComplete = true;
@@ -342,28 +360,84 @@ void calculatePitchBoardPoints() {
 }
 
 void tuiRenderer() {
+  auto screen = ftxui::ScreenInteractive::TerminalOutput();
+
+  /*
+  noseZeroCalibrationComplete
+  mouthCalibrationClosedComplete
+  mouthCalibrationOpenUpDownComplete
+  mouthCalibrationOpenRightLeftComplete
+  nosePitchBoardUpperLeftComplete
+  nosePitchBoardUpperRightComplete
+  nosePitchBoardLowerRightComplete
+  nosePitchBoardLowerLeftComplete
+  nosePitchBoardCalculateComplete
+  */
+
+  std::vector<std::string> menuEntries = {
+    "Nose Calibration",
+    "Mouth Calibration (1/3)",
+    "Mouth Calibration (2/3)",
+    "Mouth Calibration (3/3)",
+    "Pitch Board Calibration (1/5)",
+    "Pitch Board Calibration (2/5)",
+    "Pitch Board Calibration (3/5)",
+    "Pitch Board Calibration (4/5)",
+    "Pitch Board Calibration (5/5)",
+  };
+  int menuSelectedIndex;
+  ftxui::MenuOption menuOption;
+  menuOption.on_change = [] {
+  };
+  auto menu = ftxui::Menu(&menuEntries, &menuSelectedIndex, menuOption);
+  std::string pitchBoardNumberOfFretsStr;
+  ftxui::InputOption inputOption;
+  inputOption.on_enter = [pitchBoardNumberOfFretsStr] {
+    try {
+      pitchBoardNumberOfFrets = (unsigned int)std::stoi(pitchBoardNumberOfFretsStr);
+    } catch (exception& e) {
+      // FIXME
+    }
+  };
+  auto inputNumberOfFrets = ftxui::Input(&pitchBoardNumberOfFretsStr, "Number of frets");
+  auto renderer = ftxui::Renderer([&] {
+      return ftxui::hbox({
+        menu->Render(),
+        ftxui::separator(),
+        ftxui::vbox({
+          ftxui::filler(),
+          ftxui::hbox({
+            ftxui::filler(),
+            ftxui::text("test"),
+            ftxui::filler(),
+          }),
+          ftxui::filler(),
+        }),
+      });
+    });
+  screen.Loop(renderer);
   while (true) {
     tuiMutex.lock();
     auto document =
-        ftxui::vbox({
-            ftxui::filler(),
+      ftxui::vbox({
+        ftxui::filler(),
+        ftxui::hbox({
+          ftxui::filler(),
+          ftxui::vbox({
             ftxui::hbox({
-                ftxui::filler(),
-                ftxui::vbox({
-                  ftxui::hbox({
-                    ftxui::filler(),
-                    ftxui::text(tuiRendererHeaderString) | ftxui::bold,
-                    ftxui::filler(),
-                  }),
-                  ftxui::separator(),
-                  ftxui::hbox({
-                    ftxui::paragraph(tuiRendererBodyString),
-                  }),
-                }) | ftxui::border,
-                ftxui::filler(),
+              ftxui::filler(),
+              ftxui::text(tuiRendererHeaderString) | ftxui::bold,
+              ftxui::filler(),
             }),
-            ftxui::filler(),
-        });
+            ftxui::separator(),
+            ftxui::hbox({
+              ftxui::paragraph(tuiRendererBodyString),
+            }),
+          }) | ftxui::border,
+          ftxui::filler(),
+        }),
+        ftxui::filler(),
+      });
     auto screen = ftxui::Screen::Create(ftxui::Dimension::Full());
     ftxui::Render(screen, document);
     screen.Print();
@@ -737,8 +811,9 @@ int main(int argc, char** argv) {
         }
         m.unlock();
         m.lock();
-        int guiMatrixWidth = guiMatrix.cols;
-        int guiMatrixHeight = guiMatrix.rows;
+        // save the guiMatrix's size in order to know the size of our 'canvas' in calculation
+        guiMatrixWidth = guiMatrix.cols;
+        guiMatrixHeight = guiMatrix.rows;
         cv::line(guiMatrix,
             cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
             cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
