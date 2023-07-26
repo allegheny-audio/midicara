@@ -18,6 +18,7 @@
 #include "ftxui/component/captured_mouse.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_base.hpp"
+#include "ftxui/component/component_options.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/node.hpp"
 #include "ftxui/screen/color.hpp"
@@ -449,6 +450,7 @@ void tuiRenderer() {
 
 void calibration() {
   std::thread thread_tuiRenderer(tuiRenderer);
+  thread_tuiRenderer.join(); // FIXME
   int N = 100;
   int measurements[N];
   int acc;
