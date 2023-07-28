@@ -45,8 +45,8 @@ std::atomic<bool> run = true;
 ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
 const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
-unsigned int guiMatrixWidth = 100;
-unsigned int guiMatrixHeight = 100;
+unsigned int cvMatrixWidth = 100;
+unsigned int cvMatrixHeight = 100;
 
 bool calibrationGreenLight = false;
 bool noseZeroCalibrationComplete = false;
@@ -59,6 +59,7 @@ bool nosePitchBoardLowerRightComplete = false;
 bool nosePitchBoardLowerLeftComplete = false;
 bool nosePitchBoardCalculateComplete = false;
 
+int dlibFacialParts[68][2];
 std::atomic<bool> faceDetected = false;
 unsigned int noseSensitivity = 2; // sensitivity multiplier to nose pointer position (because nose is fairly accurate, it can be increased in sensitivity)
 int noseCurrentPosition[2];
@@ -302,12 +303,12 @@ void calculatePitchBoardPoints() {
     }
   }
   // store mapping between pixel and midi note to play to avoid calculations on-the-fly
-  pixelMidiNoteCache = (unsigned char**)malloc(sizeof(unsigned char*) * guiMatrixWidth);
-  for (int i = 0; i < guiMatrixWidth; i++) {
-    pixelMidiNoteCache[i] = (unsigned char*)malloc(sizeof(unsigned char) * guiMatrixHeight);
+  pixelMidiNoteCache = (unsigned char**)malloc(sizeof(unsigned char*) * cvMatrixWidth);
+  for (int i = 0; i < cvMatrixWidth; i++) {
+    pixelMidiNoteCache[i] = (unsigned char*)malloc(sizeof(unsigned char) * cvMatrixHeight);
   }
-  for (int u = 0; u < guiMatrixWidth; u++) {
-    for (int v = 0; v < guiMatrixHeight; v++) {
+  for (int u = 0; u < cvMatrixWidth; u++) {
+    for (int v = 0; v < cvMatrixHeight; v++) {
       // determine and cache which part of the pitchBoardMidiNoteCache this pixel belongs to
       bool boundingBoxFound = false;
       for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
@@ -648,14 +649,10 @@ void tuiRenderer() {
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 9; });
 
   auto canvas = ftxui::Renderer([] () {
-      auto c = ftxui::Canvas(guiMatrixWidth, guiMatrixHeight);
+      auto c = ftxui::Canvas(cvMatrixWidth, cvMatrixHeight);
       if (faceDetected.load()) {
-        m.lock();
-        if (noseZeroCalibrationComplete) {
-          c.DrawPointCircleFilled(noseCurrentPositionMultiplied[0], noseCurrentPositionMultiplied[1], 1);
-        } else {
-          c.DrawPointCircleFilled(noseCurrentPosition[0], noseCurrentPosition[1], 1);
-        }
+        // obtain mutex lock in this context, so it releases ownership on context exit
+        std::unique_lock<std::mutex> lock(m);
         // draw out pitch board when all necessary parameters are configured
         if (true
           && nosePitchBoardUpperLeftComplete
@@ -679,6 +676,9 @@ void tuiRenderer() {
             }
           }
         } else {
+          for (int i = 0; i < 68; i++) {
+            c.DrawPointCircleFilled(dlibFacialParts[i][0], dlibFacialParts[i][1], 1, ftxui::Color::Green);
+          }
           // draw specified corners of the pitch board because it's not all mapped out yet
           if (nosePitchBoardUpperLeftComplete) {
             c.DrawPointCircleFilled(nosePitchBoardUpperLeftPosition[0], nosePitchBoardUpperLeftPosition[1], 1, ftxui::Color::Red);
@@ -693,8 +693,37 @@ void tuiRenderer() {
             c.DrawPointCircleFilled(nosePitchBoardLowerLeftPosition[0], nosePitchBoardLowerLeftPosition[1], 1, ftxui::Color::Red);
           }
         }
-        m.unlock();
-        return ftxui::canvas(std::move(c)) | ftxui::border;
+        // draw guide lines on the edges of the canvas to show how open the mouth is
+        if (true
+          && mouthCalibrationClosedComplete
+          && mouthCalibrationOpenUpDownComplete
+          && mouthCalibrationOpenRightLeftComplete) {
+          c.DrawPointLine(
+              cvMatrixWidth - 1, round(cvMatrixHeight / 2) - round(mouthOpenPercentage * (float)cvMatrixHeight / 4.0),
+              cvMatrixWidth - 1 - 5, round(cvMatrixHeight / 2) - round(mouthOpenPercentage * (float)cvMatrixHeight / 4.0));
+          c.DrawPointLine(
+              cvMatrixWidth - 1, round(cvMatrixHeight / 2) + round(mouthOpenPercentage * (float)cvMatrixHeight / 4.0),
+              cvMatrixWidth - 1 - 5, round(cvMatrixHeight / 2) + round(mouthOpenPercentage * (float)cvMatrixHeight / 4.0));
+          c.DrawPointLine(
+              round(cvMatrixWidth / 2) - round(mouthWidePercentage * (float)cvMatrixWidth / 4.0), cvMatrixHeight - 1,
+              round(cvMatrixWidth / 2) - round(mouthWidePercentage * (float)cvMatrixWidth / 4.0), cvMatrixHeight - 1 - 5);
+          c.DrawPointLine(
+              round(cvMatrixWidth / 2) + round(mouthWidePercentage * (float)cvMatrixWidth / 4.0), cvMatrixHeight - 1,
+              round(cvMatrixWidth / 2) + round(mouthWidePercentage * (float)cvMatrixWidth / 4.0), cvMatrixHeight - 1 - 5);
+        } else {
+        }
+        if (noseZeroCalibrationComplete) {
+          c.DrawPointCircleFilled(noseCurrentPositionMultiplied[0], noseCurrentPositionMultiplied[1], 1);
+        } else {
+          c.DrawPointCircleFilled(noseCurrentPosition[0], noseCurrentPosition[1], 1);
+        }
+        return ftxui::vbox({
+          ftxui::hbox({
+            ftxui::canvas(std::move(c)) | ftxui::border,
+            ftxui::gaugeUp(mouthOpenPercentage),
+          }),
+          ftxui::gaugeRight(mouthWidePercentage),
+        });
       } else {
         return ftxui::text("No face detected.") | ftxui::border;
       }
@@ -912,24 +941,23 @@ int main(int argc, char** argv) {
       m.lock();
       calibrationGreenLight = true;
       m.unlock();
-      cv::Mat matrix;
-      if (!cap.read(matrix)) {
+      cv::Mat cvMatrix;
+      if (!cap.read(cvMatrix)) {
         break;
       }
       // Turn OpenCV's Mat into something dlib can deal with.  Note that this just
       // wraps the Mat object, it doesn't copy anything.  So baseimg is only valid as
-      // long as matrix is valid.  Also don't do anything to matrix that would cause it
+      // long as cvMatrix is valid.  Also don't do anything to cvMatrix that would cause it
       // to reallocate the memory which stores the image as that will make baseimg
       // contain dangling pointers.  This basically means you shouldn't modify matrix
       // while using baseimg.
-      cv::Mat guiMatrix = cv::Mat(matrix.size(), matrix.type(), cv::Scalar::all(255));
-      cv::flip(guiMatrix, guiMatrix, 1);
+
       // set color to grayscale
-      cv::cvtColor(matrix, matrix, cv::COLOR_BGR2GRAY);
-      cv::flip(matrix, matrix, 1);
+      cv::cvtColor(cvMatrix, cvMatrix, cv::COLOR_BGR2GRAY);
+      cv::flip(cvMatrix, cvMatrix, 1);
       // use unsigned char instead of `bgr_pixel` as pixel type,
       // because we are working with grayscale magnitude
-      cv_image<unsigned char> baseimg(matrix);
+      cv_image<unsigned char> baseimg(cvMatrix);
       // detect faces
       faces = detector(baseimg);
       // find the pose of each face
@@ -939,12 +967,6 @@ int main(int argc, char** argv) {
         full_object_detection shape = sp(baseimg, faces[0]);
 
         m.lock();
-        // draw a pointer directed by the nose
-        if (noseZeroCalibrationComplete) {
-          cv::circle(guiMatrix, cv::Point(noseCurrentPositionMultiplied[0], noseCurrentPositionMultiplied[1]), 1, cv::Scalar(0, 0, 255), 1);
-        } else {
-          cv::circle(guiMatrix, cv::Point(noseCurrentPosition[0], noseCurrentPosition[1]), 1, cv::Scalar(0, 0, 255), 1);
-        }
         // draw out pitch board when all necessary parameters are configured
         if (true
           && nosePitchBoardUpperLeftComplete
@@ -952,71 +974,19 @@ int main(int argc, char** argv) {
           && nosePitchBoardLowerRightComplete
           && nosePitchBoardLowerLeftComplete
           && pitchBoardNumberOfFrets > 0) {
-          if (nosePitchBoardCalculateComplete) {
-            // connect all outer points
-            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
-              cv::line(guiMatrix,
-                  cv::Point(pitchBoardPoints[i][0][0], pitchBoardPoints[i][0][1]),
-                  cv::Point(pitchBoardPoints[i][pitchBoardNumberOfStrings][0], pitchBoardPoints[i][pitchBoardNumberOfStrings][1]),
-                  cv::Scalar(0, 0, 0));
-            }
-            for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
-              cv::line(guiMatrix,
-                  cv::Point(pitchBoardPoints[0][j][0], pitchBoardPoints[0][j][1]),
-                  cv::Point(pitchBoardPoints[pitchBoardNumberOfFrets][j][0], pitchBoardPoints[pitchBoardNumberOfFrets][j][1]),
-                  cv::Scalar(0, 0, 0));
-            }
-            // FIXME: DEBUG draw all points
-            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
-              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
-                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 255), 1);
-              }
-            }
-          }
         } else {
-          // draw specified corners of the pitch board because it's not all mapped out yet
-          if (nosePitchBoardUpperLeftComplete) {
-            cv::circle(guiMatrix, cv::Point(nosePitchBoardUpperLeftPosition[0], nosePitchBoardUpperLeftPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
-          }
-          if (nosePitchBoardUpperRightComplete) {
-            cv::circle(guiMatrix, cv::Point(nosePitchBoardUpperRightPosition[0], nosePitchBoardUpperRightPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
-          }
-          if (nosePitchBoardLowerRightComplete) {
-            cv::circle(guiMatrix, cv::Point(nosePitchBoardLowerRightPosition[0], nosePitchBoardLowerRightPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
-          }
-          if (nosePitchBoardLowerLeftComplete) {
-            cv::circle(guiMatrix, cv::Point(nosePitchBoardLowerLeftPosition[0], nosePitchBoardLowerLeftPosition[1]), 1, cv::Scalar(0, 0, 0), 2);
+          // store facial parts globally to be drawn during configuration
+          for (int i = 0; i < 68; i++) {
+            dlibFacialParts[i][0] = shape.part(i).x();
+            dlibFacialParts[i][1] = shape.part(i).y();
           }
         }
-        m.unlock();
-        m.lock();
-        // save the guiMatrix's size in order to know the size of our 'canvas' in calculation
-        guiMatrixWidth = guiMatrix.cols;
-        guiMatrixHeight = guiMatrix.rows;
-        cv::line(guiMatrix,
-            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) - round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Scalar(100, 100, 100),
-            2);
-        cv::line(guiMatrix,
-            cv::Point(guiMatrixWidth - 1, round(guiMatrixHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Point(guiMatrixWidth - 1 - 5, round(guiMatrixHeight / 2) + round(mouthOpenPercentage * (float)guiMatrixHeight / 4.0)),
-            cv::Scalar(100, 100, 100),
-            2);
-        cv::line(guiMatrix, 
-            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
-            cv::Point(round(guiMatrixWidth / 2) - round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
-            cv::Scalar(100, 100, 100),
-            2);
-        cv::line(guiMatrix, 
-            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1),
-            cv::Point(round(guiMatrixWidth / 2) + round(mouthWidePercentage * (float)guiMatrixWidth / 4.0), guiMatrixHeight - 1 - 5),
-            cv::Scalar(100, 100, 100),
-            2);
-        m.unlock();
+
+        // save the cvMatrix's size in order to know the size of our 'canvas' in calculation
+        cvMatrixWidth = cvMatrix.cols;
+        cvMatrixHeight = cvMatrix.rows;
 
         // capture nose position
-        m.lock();
         noseCurrentPosition[0] = shape.part(31-1).x();
         noseCurrentPosition[1] = shape.part(31-1).y();
         if (noseZeroCalibrationComplete) {
@@ -1027,27 +997,13 @@ int main(int argc, char** argv) {
         mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
         mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
         m.unlock();
-        
-        cv_image<bgr_pixel> guiImg(guiMatrix);
-        // FIXME iamge_window: win.clear_overlay();
-        if (true
-          && noseZeroCalibrationComplete
-          && mouthCalibrationClosedComplete
-          && mouthCalibrationOpenUpDownComplete
-          && mouthCalibrationOpenRightLeftComplete) {
-          // FIXME iamge_window: win.set_image(guiImg);
-        } else {
-          // FIXME iamge_window: win.set_image(baseimg);
-          // FIXME iamge_window: win.add_overlay(render_face_detections(shape));
-        }
+
         // trigger render in TUI
         screen.PostEvent(ftxui::Event::Custom);
       } else {
         faceDetected.store(false);
         // trigger render in TUI
         screen.PostEvent(ftxui::Event::Custom);
-        // FIXME iamge_window: win.clear_overlay();
-        // FIXME iamge_window: win.set_image(baseimg);
       }
     }
     thread_tuiRenderer.join();
