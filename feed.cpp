@@ -9,6 +9,7 @@
 #include <dlib/image_io.h>
 #include <iostream>
 #include <thread>
+#include <condition_variable>
 #include <mutex>
 #include <math.h>
 #include <chrono>
@@ -83,6 +84,10 @@ float*** pitchBoardPointsAsFloats;
 unsigned int*** pitchBoardPoints;
 unsigned char** pixelMidiNoteCache;
 
+std::condition_variable midiPortSelectedEvent;
+std::condition_variable midiPortsPopulatedEvent;
+std::vector<std::string> midiPortMenuEntries;
+int midiPortMenuSelectedIndex = std::numeric_limits<int>::max();
 bool midiPlaying;
 bool mouthOpen;
 float mouthOpenPercentage;
@@ -361,100 +366,7 @@ void calculatePitchBoardPoints() {
 }
 
 void tuiRenderer() {
-  auto screen = ftxui::ScreenInteractive::TerminalOutput();
-
-  /*
-  noseZeroCalibrationComplete
-  mouthCalibrationClosedComplete
-  mouthCalibrationOpenUpDownComplete
-  mouthCalibrationOpenRightLeftComplete
-  nosePitchBoardUpperLeftComplete
-  nosePitchBoardUpperRightComplete
-  nosePitchBoardLowerRightComplete
-  nosePitchBoardLowerLeftComplete
-  nosePitchBoardCalculateComplete
-  */
-
-  std::vector<std::string> menuEntries = {
-    "Nose Calibration",
-    "Mouth Calibration (1/3)",
-    "Mouth Calibration (2/3)",
-    "Mouth Calibration (3/3)",
-    "Pitch Board Calibration (1/5)",
-    "Pitch Board Calibration (2/5)",
-    "Pitch Board Calibration (3/5)",
-    "Pitch Board Calibration (4/5)",
-    "Pitch Board Calibration (5/5)",
-  };
-  int menuSelectedIndex;
-  ftxui::MenuOption menuOption;
-  menuOption.on_change = [] {
-  };
-  auto menu = ftxui::Menu(&menuEntries, &menuSelectedIndex, menuOption);
-  std::string pitchBoardNumberOfFretsStr;
-  ftxui::InputOption inputOption;
-  inputOption.on_enter = [pitchBoardNumberOfFretsStr] {
-    try {
-      pitchBoardNumberOfFrets = (unsigned int)std::stoi(pitchBoardNumberOfFretsStr);
-    } catch (exception& e) {
-      // FIXME
-    }
-  };
-  auto inputNumberOfFrets = ftxui::Input(&pitchBoardNumberOfFretsStr, "Number of frets");
-  auto renderer = ftxui::Renderer([&] {
-      return ftxui::hbox({
-        menu->Render(),
-        ftxui::separator(),
-        ftxui::vbox({
-          ftxui::filler(),
-          ftxui::hbox({
-            ftxui::filler(),
-            ftxui::text("test"),
-            ftxui::filler(),
-          }),
-          ftxui::filler(),
-        }),
-      });
-    });
-  screen.Loop(renderer);
-  while (true) {
-    tuiMutex.lock();
-    auto document =
-      ftxui::vbox({
-        ftxui::filler(),
-        ftxui::hbox({
-          ftxui::filler(),
-          ftxui::vbox({
-            ftxui::hbox({
-              ftxui::filler(),
-              ftxui::text(tuiRendererHeaderString) | ftxui::bold,
-              ftxui::filler(),
-            }),
-            ftxui::separator(),
-            ftxui::hbox({
-              ftxui::paragraph(tuiRendererBodyString),
-            }),
-          }) | ftxui::border,
-          ftxui::filler(),
-        }),
-        ftxui::filler(),
-      });
-    auto screen = ftxui::Screen::Create(ftxui::Dimension::Full());
-    ftxui::Render(screen, document);
-    screen.Print();
-    tuiMutex.unlock();
-    std::this_thread::sleep_for(500ms);
-    // FIXME:  Input(&last_name, "last name");
-  }
-}
-
-void calibration() {
-  std::thread thread_tuiRenderer(tuiRenderer);
-  thread_tuiRenderer.join(); // FIXME
-  int N = 100;
-  int measurements[N];
-  int acc;
-  // calc average of live measured value
+  auto screen = ftxui::ScreenInteractive::Fullscreen();
   auto calcAverage = [](int* readValue, int* assignValue, int iterations) {
     int measurements[iterations];
     int acc = 0;
@@ -469,7 +381,307 @@ void calibration() {
     }
     *assignValue = acc / iterations;
   };
-  // wait for facial recog to set up before running
+
+  std::vector<std::string> mainMenuEntries = {
+    "Midi Setup",
+    "Nose Calibration",
+    "Mouth Calibration (1/3)",
+    "Mouth Calibration (2/3)",
+    "Mouth Calibration (3/3)",
+    "Pitch Board Calibration (1/5)",
+    "Pitch Board Calibration (2/5)",
+    "Pitch Board Calibration (3/5)",
+    "Pitch Board Calibration (4/5)",
+    "Pitch Board Calibration (5/5)",
+  };
+  int mainMenuSelectedIndex;
+  auto mainMenu = ftxui::Menu(&mainMenuEntries, &mainMenuSelectedIndex);
+
+  // wait for midi ports to be populated
+  {
+    std::unique_lock<std::mutex> lock(midiMutex);
+    midiPortsPopulatedEvent.wait(lock);
+  }
+  ftxui::MenuOption midiMenuOption;
+  midiMenuOption.on_enter = [] {
+    std::unique_lock<std::mutex> lock(midiMutex);
+    midiPortSelectedEvent.notify_all();
+  };
+  auto midiMenu = ftxui::Menu(&midiPortMenuEntries, &midiPortMenuSelectedIndex, midiMenuOption);
+  midiMenu = midiMenu
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Please select which midi output you would like to use"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Currently selected:") | ftxui::bold,
+            ftxui::separator(),
+            ftxui::text(midiPortMenuEntries[midiPortMenuSelectedIndex]),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 0; });
+
+  auto noseCalc = ftxui::Button("Ready", [&] {
+    m.lock();
+    noseZeroCalibrated[0] = noseCurrentPosition[0];
+    noseZeroCalibrated[1] = noseCurrentPosition[1];
+    noseZeroCalibrationComplete = true;
+    m.unlock();
+  });
+  noseCalc = noseCalc
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Please put your nose in the center of the screen in order to calibrate the center of where your face will be."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved location: (" + std::to_string(noseZeroCalibrated[0]) + ", " + std::to_string(noseZeroCalibrated[1]) + ")"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 1; });
+
+  auto mouthCalc1 = ftxui::Button("Ready", [&] {
+    calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
+    calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
+    calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownClosedDistanceCalibrated, 100);
+    calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftClosedDistanceCalibrated, 100);
+    m.lock();
+    mouthCalibrationClosedComplete = true;
+    m.unlock();
+  });
+  mouthCalc1 = mouthCalc1
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Please close your mouth in a relaxed manner."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved dimensions: outer up-down:"
+                + std::to_string(mouthOuterLipUpDownClosedDistanceCalibrated)
+                + "px; inner up-down: "
+                + std::to_string(mouthInnerLipUpDownClosedDistanceCalibrated)
+                + "px; inner right-left: "
+                + std::to_string(mouthInnerLipRightLeftClosedDistanceCalibrated)
+                + "px; outer right-left: "
+                + std::to_string(mouthOuterLipRightLeftClosedDistanceCalibrated)
+                + "px"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 2; });
+
+  auto mouthCalc2 = ftxui::Button("Ready", [&] {
+    calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
+    calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownOpenDistanceCalibrated, 100);
+    m.lock();
+    mouthCalibrationOpenUpDownComplete = true;
+    m.unlock();
+  });
+  mouthCalc2 = mouthCalc2
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Please open your mouth as if you were yawning."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved dimensions: outer:" + std::to_string(mouthOuterLipUpDownOpenDistanceCalibrated) + "px; inner: " + std::to_string(mouthInnerLipUpDownOpenDistanceCalibrated) + "px"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 3; });
+
+  auto mouthCalc3 = ftxui::Button("Ready", [&] {
+    calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
+    calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftOpenDistanceCalibrated, 100);
+    m.lock();
+    mouthCalibrationOpenRightLeftComplete = true;
+    m.unlock();
+  });
+  mouthCalc3 = mouthCalc3
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Please smile widely without opening your mouth."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved dimensions: outer:" + std::to_string(mouthOuterLipRightLeftOpenDistanceCalibrated) + "px; inner: " + std::to_string(mouthInnerLipRightLeftOpenDistanceCalibrated) + "px"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 4; });
+
+  auto pitchBoardCalc1 = ftxui::Button("Ready", [&] {
+    m.lock();
+    nosePitchBoardUpperLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardUpperLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardUpperLeftComplete = true;
+    if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+      m.unlock();
+      calculatePitchBoardPoints();
+    }
+    m.unlock();
+  });
+  pitchBoardCalc1 = pitchBoardCalc1
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Choose a location for the UPPER LEFT corner of the pitch board using your nose."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved location: (" + std::to_string(nosePitchBoardUpperLeftPosition[0]) + ", " + std::to_string(nosePitchBoardUpperLeftPosition[1]) + ")"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 5; });
+
+  auto pitchBoardCalc2 = ftxui::Button("Ready", [&] {
+    m.lock();
+    nosePitchBoardUpperRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardUpperRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardUpperRightComplete = true;
+    if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+      m.unlock();
+      calculatePitchBoardPoints();
+    }
+    m.unlock();
+  });
+  pitchBoardCalc2 = pitchBoardCalc2
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Choose a location for the UPPER RIGHT corner of the pitch board using your nose."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved location: (" + std::to_string(nosePitchBoardUpperRightPosition[0]) + ", " + std::to_string(nosePitchBoardUpperRightPosition[1]) + ")"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 6; });
+  auto pitchBoardCalc3 = ftxui::Button("Ready", [&] {
+    m.lock();
+    nosePitchBoardLowerRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardLowerRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardLowerRightComplete = true;
+    if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+      m.unlock();
+      calculatePitchBoardPoints();
+    }
+    m.unlock();
+  });
+  pitchBoardCalc3 = pitchBoardCalc3
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Choose a location for the LOWER RIGHT corner of the pitch board using your nose."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved location: (" + std::to_string(nosePitchBoardLowerRightPosition[0]) + ", " + std::to_string(nosePitchBoardLowerRightPosition[1]) + ")"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 7; });
+  auto pitchBoardCalc4 = ftxui::Button("Ready", [&] {
+    m.lock();
+    nosePitchBoardLowerLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardLowerLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardLowerLeftComplete = true;
+    if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+      m.unlock();
+      calculatePitchBoardPoints();
+    }
+    m.unlock();
+  });
+  pitchBoardCalc4 = pitchBoardCalc4
+    | ftxui::Renderer([] (ftxui::Element el) {
+        std::unique_lock<std::mutex> lock(m);
+        return ftxui::vbox({
+            ftxui::text("Choose a location for the LOWER LEFT corner of the pitch board using your nose."),
+            ftxui::text("Please press 'Ready' when ready to save location"),
+            ftxui::separator(),
+            el,
+            ftxui::separator(),
+            ftxui::text("Saved location: (" + std::to_string(nosePitchBoardLowerLeftPosition[0]) + ", " + std::to_string(nosePitchBoardLowerLeftPosition[1]) + ")"),
+          }) | ftxui::border;
+      })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 8; });
+
+  std::string pitchBoardNumberOfFretsStr;
+  ftxui::InputOption inputOption;
+  inputOption.on_enter = [&pitchBoardNumberOfFretsStr] {
+    try {
+      m.lock();
+      pitchBoardNumberOfFrets = (unsigned int)std::stoi(pitchBoardNumberOfFretsStr);
+      if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+        m.unlock();
+        calculatePitchBoardPoints();
+      }
+      m.unlock();
+    } catch (exception& e) {
+      // FIXME
+    }
+  };
+  auto pitchBoardCalc5 = ftxui::Input(&pitchBoardNumberOfFretsStr, "Number of frets");
+  pitchBoardCalc5 = pitchBoardCalc5
+    | ftxui::Renderer([] (ftxui::Element el) {
+      std::unique_lock<std::mutex> lock(m);
+      return ftxui::vbox({
+        ftxui::text("Input how many 'frets' to have on your pitch board. (think violin fretboard)"),
+        ftxui::separator(),
+        el,
+        ftxui::separator(),
+        ftxui::text("Saved value: " + std::to_string(pitchBoardNumberOfFrets)),
+      }) | ftxui::border;
+    })
+    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 9; });
+
+  auto componentLayout = ftxui::Container::Vertical({
+    midiMenu,
+    noseCalc,
+    mouthCalc1,
+    mouthCalc2,
+    mouthCalc3,
+    pitchBoardCalc1,
+    pitchBoardCalc2,
+    pitchBoardCalc3,
+    pitchBoardCalc4,
+    pitchBoardCalc5,
+  });
+  auto layout = ftxui::Container::Horizontal({
+    mainMenu,
+    componentLayout,
+  });
+  auto renderer = ftxui::Renderer(layout, [&] {
+      return ftxui::hbox({
+        mainMenu->Render(),
+        ftxui::separator(),
+        ftxui::filler(),
+        ftxui::vbox({
+          ftxui::filler(),
+          componentLayout->Render(),
+          ftxui::filler(),
+        }),
+        ftxui::filler(),
+      });
+    });
+  renderer = renderer
+    | ftxui::CatchEvent([&] (ftxui::Event event) {
+        if (event == ftxui::Event::Character('q')) {
+          screen.ExitLoopClosure()();
+          return true;
+        }
+        return false;
+      });
+  // spinlock until greenlight is given
   while (true) {
     m.lock();
     if (calibrationGreenLight) {
@@ -479,124 +691,8 @@ void calibration() {
     m.unlock();
     std::this_thread::sleep_for(100ms);
   }
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Nose Calibration");
-  tuiRendererBodyString = std::string("Please put your nose in the center of the screen in order to calibrate the center of where your face will be.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  m.lock();
-  noseZeroCalibrated[0] = noseCurrentPosition[0];
-  noseZeroCalibrated[1] = noseCurrentPosition[1];
-  noseZeroCalibrationComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Mouth Calibration (1/3)");
-  tuiRendererBodyString = std::string("Please close your mouth in a relaxed manner.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
-  calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
-  calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownClosedDistanceCalibrated, 100);
-  calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftClosedDistanceCalibrated, 100);
-  m.lock();
-  mouthCalibrationClosedComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Mouth Calibration (2/3)");
-  tuiRendererBodyString = std::string("Please open your mouth as if you were yawning.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
-  calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownOpenDistanceCalibrated, 100);
-  m.lock();
-  mouthCalibrationOpenUpDownComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Mouth Calibration (3/3)");
-  tuiRendererBodyString = std::string("Please smile widely without opening your mouth.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
-  calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftOpenDistanceCalibrated, 100);
-  m.lock();
-  mouthCalibrationOpenRightLeftComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Pitch Board Calibration (1/5)");
-  tuiRendererBodyString = std::string("Choose a location for the UPPER LEFT corner of the pitch board using your nose.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  m.lock();
-  nosePitchBoardUpperLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-  nosePitchBoardUpperLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
-  nosePitchBoardUpperLeftComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Pitch Board Calibration (2/5)");
-  tuiRendererBodyString = std::string("Choose a location for the UPPER RIGHT corner of the pitch board using your nose.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  m.lock();
-  nosePitchBoardUpperRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-  nosePitchBoardUpperRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
-  nosePitchBoardUpperRightComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Pitch Board Calibration (3/5)");
-  tuiRendererBodyString = std::string("Choose a location for the LOWER RIGHT corner of the pitch board using your nose.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  m.lock();
-  nosePitchBoardLowerRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-  nosePitchBoardLowerRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
-  nosePitchBoardLowerRightComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Pitch Board Calibration (4/5)");
-  tuiRendererBodyString = std::string("Choose a location for the LOWER LEFT corner of the pitch board using your nose.\nPress [Enter] when ready.");
-  tuiMutex.unlock();
-  getchar();
-
-  m.lock();
-  nosePitchBoardLowerLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-  nosePitchBoardLowerLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
-  nosePitchBoardLowerLeftComplete = true;
-  m.unlock();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Pitch Board Calibration (5/5)");
-  tuiRendererBodyString = std::string("Input how many 'frets' to have on your pitch board. (think violin fretboard)\nPress [Enter] when ready.");
-  tuiMutex.unlock();                   
-
-  unsigned int tmp;
-  cout << "Number of frets: ";
-  // FIXME: cin >> tmp;
-  m.lock();
-  pitchBoardNumberOfFrets = /*tmp*/ 7; // FIXME
-  m.unlock();
-
-  calculatePitchBoardPoints();
-
-  tuiMutex.lock();
-  tuiRendererHeaderString = std::string("Calibration Complete!!");
-  tuiRendererBodyString = std::string(":)");
-  tuiMutex.unlock();                   
-
-  thread_tuiRenderer.join();
+  screen.Loop(renderer);
+  exit(0);
 }
 
 void midiDriver() {
@@ -604,7 +700,24 @@ void midiDriver() {
   polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
   libremidi::midi_out midi = libremidi::midi_out(libremidi::API::LINUX_ALSA_SEQ, "test");
-  midi.open_port(1);
+  // enumerate midi ports to be displayed to user
+  midiMutex.lock();
+  for (int i = 0, N = midi.get_port_count(); i < N; i++) {
+    midiPortMenuEntries.push_back(midi.get_port_name(i));
+  }
+  midiMutex.unlock();
+  // tell other threads midi ports are populated
+  {
+    std::unique_lock<std::mutex> lock(midiMutex);
+    midiPortsPopulatedEvent.notify_all();
+  }
+  // wait for midi port to be chosen
+  {
+    std::unique_lock<std::mutex> lock(midiMutex);
+    midiPortSelectedEvent.wait(lock);
+    cout << "Midi port selected!!!" << endl;
+  }
+  midi.open_port(midiPortMenuSelectedIndex);
   // startup sequence
   std::this_thread::sleep_for(1000ms);
   midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)48, (uint8_t)70));
@@ -703,7 +816,7 @@ void midiDriver() {
 
 int main(int argc, char** argv) {  
   try {
-    std::thread thread_calibration(calibration);
+    std::thread thread_tuiRenderer(tuiRenderer);
     std::thread thread_interpretFacialData(interpretFacialData);
     std::thread thread_midiDriver(midiDriver);
 
@@ -774,7 +887,8 @@ int main(int argc, char** argv) {
           && nosePitchBoardUpperLeftComplete
           && nosePitchBoardUpperRightComplete
           && nosePitchBoardLowerRightComplete
-          && nosePitchBoardLowerLeftComplete) {
+          && nosePitchBoardLowerLeftComplete
+          && pitchBoardNumberOfFrets > 0) {
           if (nosePitchBoardCalculateComplete) {
             // connect all outer points
             for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
@@ -792,7 +906,7 @@ int main(int argc, char** argv) {
             // FIXME: DEBUG draw all points
             for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
               for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
-                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 100), 1);
+                cv::circle(guiMatrix, cv::Point(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1]), 1, cv::Scalar(0, 0, 255), 1);
               }
             }
           }
