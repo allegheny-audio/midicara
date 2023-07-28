@@ -627,10 +627,9 @@ void tuiRenderer() {
       }
       m.unlock();
     } catch (exception& e) {
-      // FIXME
     }
   };
-  auto pitchBoardCalc5 = ftxui::Input(&pitchBoardNumberOfFretsStr, "Number of frets");
+  auto pitchBoardCalc5 = ftxui::Input(&pitchBoardNumberOfFretsStr, "Number of frets", inputOption);
   pitchBoardCalc5 = pitchBoardCalc5
     | ftxui::Renderer([] (ftxui::Element el) {
       std::unique_lock<std::mutex> lock(m);
@@ -821,7 +820,6 @@ int main(int argc, char** argv) {
     std::thread thread_midiDriver(midiDriver);
 
     cv::VideoCapture cap(0);
-    // FIXME: work to figure out optimal size
     cap.set(cv::CAP_PROP_FRAME_WIDTH, capPropFrameWidth);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, capPropFrameHeight);
     if (!cap.isOpened()) {
