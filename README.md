@@ -1,6 +1,6 @@
 # Midicara
 
-Midicara is a software midi controller that outputs midi signals based on facial landmarks. These facial landmarks a standard developed by **i-bug** and can be found [here](http://ibug.doc.ic.ac.uk/resources/facial-point-annotations/).
+Midicara is a software midi controller that outputs midi signals based on facial landmarks. These facial landmarks come from a standard developed by **i-bug** and can be found [here](http://ibug.doc.ic.ac.uk/resources/facial-point-annotations/).
 
 ## Building
 
