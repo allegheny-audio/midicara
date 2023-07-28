@@ -24,7 +24,9 @@
 #include "ftxui/dom/node.hpp"
 #include "ftxui/screen/color.hpp"
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/dom/canvas.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/color.hpp>
 
 using namespace dlib;
 using namespace std;
@@ -38,7 +40,9 @@ static const bool isDebug = false;
 std::mutex m;
 std::mutex midiMutex;
 std::mutex tuiMutex;
+std::atomic<bool> run = true;
 
+ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
 const unsigned int capPropFrameWidth = 100;
 const unsigned int capPropFrameHeight = 100;
 unsigned int guiMatrixWidth = 100;
@@ -55,9 +59,7 @@ bool nosePitchBoardLowerRightComplete = false;
 bool nosePitchBoardLowerLeftComplete = false;
 bool nosePitchBoardCalculateComplete = false;
 
-string tuiRendererHeaderString;
-string tuiRendererBodyString;
-
+std::atomic<bool> faceDetected = false;
 unsigned int noseSensitivity = 2; // sensitivity multiplier to nose pointer position (because nose is fairly accurate, it can be increased in sensitivity)
 int noseCurrentPosition[2];
 int noseCurrentPositionMultiplied[2]; // current nose position multiplied by the sensitivity factor
@@ -84,8 +86,8 @@ float*** pitchBoardPointsAsFloats;
 unsigned int*** pitchBoardPoints;
 unsigned char** pixelMidiNoteCache;
 
-std::condition_variable midiPortSelectedEvent;
-std::condition_variable midiPortsPopulatedEvent;
+std::atomic<bool> midiPortSelected = false;
+std::atomic<bool> midiPortsPopulated = false;
 std::vector<std::string> midiPortMenuEntries;
 int midiPortMenuSelectedIndex = std::numeric_limits<int>::max();
 bool midiPlaying;
@@ -133,7 +135,7 @@ float triangleArea(unsigned int p1[], unsigned int p2[], unsigned int p3[]) {
 
 void interpretFacialData() {
   // wait for calibration before running
-  while (true) {
+  while (run.load()) {
     m.lock();
     if (true
       && noseZeroCalibrationComplete
@@ -156,7 +158,7 @@ void interpretFacialData() {
       return percentage;
     }
   };
-  while (true) {
+  while (run.load()) {
     midiMutex.lock();
     midiNoteToPlay = pixelMidiNoteCache[noseCurrentPositionMultiplied[0]][noseCurrentPositionMultiplied[1]];
     midiMutex.unlock();
@@ -227,7 +229,6 @@ void calculatePitchBoardPoints() {
       return parametricLine(p1, p2, matrix[0][2]);
     } else {
       cerr << "WARNING: could not find coincident point of two lines." << endl;
-      exit(-1);
       return p1; // default return value
     }
   };
@@ -366,7 +367,6 @@ void calculatePitchBoardPoints() {
 }
 
 void tuiRenderer() {
-  auto screen = ftxui::ScreenInteractive::Fullscreen();
   auto calcAverage = [](int* readValue, int* assignValue, int iterations) {
     int measurements[iterations];
     int acc = 0;
@@ -398,16 +398,19 @@ void tuiRenderer() {
   auto mainMenu = ftxui::Menu(&mainMenuEntries, &mainMenuSelectedIndex);
 
   // wait for midi ports to be populated
-  {
-    std::unique_lock<std::mutex> lock(midiMutex);
-    midiPortsPopulatedEvent.wait(lock);
+  while (!midiPortsPopulated.load()) {
+  }
+  if (!run.load()) {
+    return;
   }
   ftxui::MenuOption midiMenuOption;
-  midiMenuOption.on_enter = [] {
+  int midiPortMenuSelectedIndexLocal;
+  midiMenuOption.on_enter = [&midiPortMenuSelectedIndexLocal] {
     std::unique_lock<std::mutex> lock(midiMutex);
-    midiPortSelectedEvent.notify_all();
+    midiPortMenuSelectedIndex = midiPortMenuSelectedIndexLocal;
+    midiPortSelected.store(true);
   };
-  auto midiMenu = ftxui::Menu(&midiPortMenuEntries, &midiPortMenuSelectedIndex, midiMenuOption);
+  auto midiMenu = ftxui::Menu(&midiPortMenuEntries, &midiPortMenuSelectedIndexLocal, midiMenuOption);
   midiMenu = midiMenu
     | ftxui::Renderer([] (ftxui::Element el) {
         std::unique_lock<std::mutex> lock(m);
@@ -418,7 +421,7 @@ void tuiRenderer() {
             ftxui::separator(),
             ftxui::text("Currently selected:") | ftxui::bold,
             ftxui::separator(),
-            ftxui::text(midiPortMenuEntries[midiPortMenuSelectedIndex]),
+            ftxui::text(midiPortMenuSelectedIndex == std::numeric_limits<int>::max() ? "[none]" : midiPortMenuEntries[midiPortMenuSelectedIndex]),
           }) | ftxui::border;
       })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 0; });
@@ -429,6 +432,7 @@ void tuiRenderer() {
     noseZeroCalibrated[1] = noseCurrentPosition[1];
     noseZeroCalibrationComplete = true;
     m.unlock();
+    mainMenuSelectedIndex = 2;
   });
   noseCalc = noseCalc
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -643,6 +647,59 @@ void tuiRenderer() {
     })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 9; });
 
+  auto canvas = ftxui::Renderer([] () {
+      auto c = ftxui::Canvas(guiMatrixWidth, guiMatrixHeight);
+      if (faceDetected.load()) {
+        m.lock();
+        if (noseZeroCalibrationComplete) {
+          c.DrawPointCircleFilled(noseCurrentPositionMultiplied[0], noseCurrentPositionMultiplied[1], 1);
+        } else {
+          c.DrawPointCircleFilled(noseCurrentPosition[0], noseCurrentPosition[1], 1);
+        }
+        // draw out pitch board when all necessary parameters are configured
+        if (true
+          && nosePitchBoardUpperLeftComplete
+          && nosePitchBoardUpperRightComplete
+          && nosePitchBoardLowerRightComplete
+          && nosePitchBoardLowerLeftComplete
+          && pitchBoardNumberOfFrets > 0) {
+          if (nosePitchBoardCalculateComplete) {
+            // connect all outer points
+            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+              c.DrawPointLine(pitchBoardPoints[i][0][0], pitchBoardPoints[i][0][1], pitchBoardPoints[i][pitchBoardNumberOfStrings][0], pitchBoardPoints[i][pitchBoardNumberOfStrings][1]);
+            }
+            for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+              c.DrawPointLine(pitchBoardPoints[0][j][0], pitchBoardPoints[0][j][1], pitchBoardPoints[pitchBoardNumberOfFrets][j][0], pitchBoardPoints[pitchBoardNumberOfFrets][j][1]);
+            }
+            // FIXME: DEBUG draw all points
+            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
+              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
+                c.DrawPointCircleFilled(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1], 1, ftxui::Color::Red);
+              }
+            }
+          }
+        } else {
+          // draw specified corners of the pitch board because it's not all mapped out yet
+          if (nosePitchBoardUpperLeftComplete) {
+            c.DrawPointCircleFilled(nosePitchBoardUpperLeftPosition[0], nosePitchBoardUpperLeftPosition[1], 1, ftxui::Color::Red);
+          }
+          if (nosePitchBoardUpperRightComplete) {
+            c.DrawPointCircleFilled(nosePitchBoardUpperRightPosition[0], nosePitchBoardUpperRightPosition[1], 1, ftxui::Color::Red);
+          }
+          if (nosePitchBoardLowerRightComplete) {
+            c.DrawPointCircleFilled(nosePitchBoardLowerRightPosition[0], nosePitchBoardLowerRightPosition[1], 1, ftxui::Color::Red);
+          }
+          if (nosePitchBoardLowerLeftComplete) {
+            c.DrawPointCircleFilled(nosePitchBoardLowerLeftPosition[0], nosePitchBoardLowerLeftPosition[1], 1, ftxui::Color::Red);
+          }
+        }
+        m.unlock();
+        return ftxui::canvas(std::move(c)) | ftxui::border;
+      } else {
+        return ftxui::text("No face detected.") | ftxui::border;
+      }
+    });
+
   auto componentLayout = ftxui::Container::Vertical({
     midiMenu,
     noseCalc,
@@ -658,6 +715,7 @@ void tuiRenderer() {
   auto layout = ftxui::Container::Horizontal({
     mainMenu,
     componentLayout,
+    canvas,
   });
   auto renderer = ftxui::Renderer(layout, [&] {
       return ftxui::hbox({
@@ -665,8 +723,17 @@ void tuiRenderer() {
         ftxui::separator(),
         ftxui::filler(),
         ftxui::vbox({
+          ftxui::hbox({
+            ftxui::filler(),
+            componentLayout->Render(),
+            ftxui::filler(),
+          }),
           ftxui::filler(),
-          componentLayout->Render(),
+          ftxui::hbox({
+            ftxui::filler(),
+            canvas->Render(),
+            ftxui::filler(),
+          }),
           ftxui::filler(),
         }),
         ftxui::filler(),
@@ -675,13 +742,14 @@ void tuiRenderer() {
   renderer = renderer
     | ftxui::CatchEvent([&] (ftxui::Event event) {
         if (event == ftxui::Event::Character('q')) {
+          run.store(false);
           screen.ExitLoopClosure()();
           return true;
         }
         return false;
       });
   // spinlock until greenlight is given
-  while (true) {
+  while (run.load()) {
     m.lock();
     if (calibrationGreenLight) {
       m.unlock();
@@ -691,7 +759,6 @@ void tuiRenderer() {
     std::this_thread::sleep_for(100ms);
   }
   screen.Loop(renderer);
-  exit(0);
 }
 
 void midiDriver() {
@@ -706,15 +773,12 @@ void midiDriver() {
   }
   midiMutex.unlock();
   // tell other threads midi ports are populated
-  {
-    std::unique_lock<std::mutex> lock(midiMutex);
-    midiPortsPopulatedEvent.notify_all();
-  }
+  midiPortsPopulated.store(true);
   // wait for midi port to be chosen
-  {
-    std::unique_lock<std::mutex> lock(midiMutex);
-    midiPortSelectedEvent.wait(lock);
-    cout << "Midi port selected!!!" << endl;
+  while (!midiPortSelected.load()) {
+    if (!run.load()) {
+      return;
+    }
   }
   midi.open_port(midiPortMenuSelectedIndex);
   // startup sequence
@@ -742,7 +806,7 @@ void midiDriver() {
   uint8_t velocity;
   std::chrono::high_resolution_clock::time_point timePoint;
   unsigned int polyphonyCacheIndex = 0;
-  while (true) {
+  while (run.load()) {
     m.lock();
     if (true
       && noseZeroCalibrationComplete
@@ -756,7 +820,7 @@ void midiDriver() {
     m.unlock();
     std::this_thread::sleep_for(100ms);
   }
-  while (true) {
+  while (run.load()) {
     midiMutex.lock();
     bool debounceIgnoreNote = false;
     if (false) {
@@ -813,7 +877,7 @@ void midiDriver() {
   }
 }
 
-int main(int argc, char** argv) {  
+int main(int argc, char** argv) {
   try {
     std::thread thread_tuiRenderer(tuiRenderer);
     std::thread thread_interpretFacialData(interpretFacialData);
@@ -842,9 +906,9 @@ int main(int argc, char** argv) {
     deserialize(argv[1]) >> sp;
 
 
-    image_window win;
+    // FIXME iamge_window: image_window win;
     std::vector<rectangle> faces;
-    while (!win.is_closed()) {
+    while (run.load()) {
       m.lock();
       calibrationGreenLight = true;
       m.unlock();
@@ -871,6 +935,7 @@ int main(int argc, char** argv) {
       // find the pose of each face
       // assume only one face is detected, because only one person will be using this
       if (!faces.empty()) {
+        faceDetected.store(true);
         full_object_detection shape = sp(baseimg, faces[0]);
 
         m.lock();
@@ -964,22 +1029,31 @@ int main(int argc, char** argv) {
         m.unlock();
         
         cv_image<bgr_pixel> guiImg(guiMatrix);
-        win.clear_overlay();
+        // FIXME iamge_window: win.clear_overlay();
         if (true
           && noseZeroCalibrationComplete
           && mouthCalibrationClosedComplete
           && mouthCalibrationOpenUpDownComplete
           && mouthCalibrationOpenRightLeftComplete) {
-          win.set_image(guiImg);
+          // FIXME iamge_window: win.set_image(guiImg);
         } else {
-          win.set_image(baseimg);
-          win.add_overlay(render_face_detections(shape));
+          // FIXME iamge_window: win.set_image(baseimg);
+          // FIXME iamge_window: win.add_overlay(render_face_detections(shape));
         }
+        // trigger render in TUI
+        screen.PostEvent(ftxui::Event::Custom);
       } else {
-        win.clear_overlay();
-        win.set_image(baseimg);
+        faceDetected.store(false);
+        // trigger render in TUI
+        screen.PostEvent(ftxui::Event::Custom);
+        // FIXME iamge_window: win.clear_overlay();
+        // FIXME iamge_window: win.set_image(baseimg);
       }
     }
+    thread_tuiRenderer.join();
+    thread_interpretFacialData.join();
+    thread_midiDriver.join();
+    return 0;
   }
   catch(serialization_error& e) {
     cout << "You need dlib's default face landmarking model file to run this example." << endl;
