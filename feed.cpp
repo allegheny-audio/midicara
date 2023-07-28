@@ -91,6 +91,7 @@ std::atomic<bool> midiPortSelected = false;
 std::atomic<bool> midiPortsPopulated = false;
 std::vector<std::string> midiPortMenuEntries;
 int midiPortMenuSelectedIndex = std::numeric_limits<int>::max();
+uint8_t midiChannelToOutput = 1;
 bool midiPlaying;
 bool mouthOpen;
 float mouthOpenPercentage;
@@ -398,11 +399,14 @@ void tuiRenderer() {
   int mainMenuSelectedIndex;
   auto mainMenu = ftxui::Menu(&mainMenuEntries, &mainMenuSelectedIndex);
 
+  //##############
+  //#### midi ####
+  //##############
   // wait for midi ports to be populated
   while (!midiPortsPopulated.load()) {
+    if (!run.load()) {
+      return;
   }
-  if (!run.load()) {
-    return;
   }
   ftxui::MenuOption midiMenuOption;
   int midiPortMenuSelectedIndexLocal;
@@ -411,22 +415,62 @@ void tuiRenderer() {
     midiPortMenuSelectedIndex = midiPortMenuSelectedIndexLocal;
     midiPortSelected.store(true);
   };
-  auto midiMenu = ftxui::Menu(&midiPortMenuEntries, &midiPortMenuSelectedIndexLocal, midiMenuOption);
-  midiMenu = midiMenu
+  auto midiMenu = ftxui::Menu(&midiPortMenuEntries, &midiPortMenuSelectedIndexLocal, midiMenuOption)
     | ftxui::Renderer([] (ftxui::Element el) {
-        std::unique_lock<std::mutex> lock(m);
-        return ftxui::vbox({
-            ftxui::text("Please select which midi output you would like to use"),
-            ftxui::separator(),
-            el,
-            ftxui::separator(),
-            ftxui::text("Currently selected:") | ftxui::bold,
-            ftxui::separator(),
-            ftxui::text(midiPortMenuSelectedIndex == std::numeric_limits<int>::max() ? "[none]" : midiPortMenuEntries[midiPortMenuSelectedIndex]),
-          }) | ftxui::border;
-      })
-    | ftxui::Maybe([&] { return mainMenuSelectedIndex == 0; });
+        return el;
+      });
+  std::string midiChannelToOutputStr;
+  ftxui::InputOption midiChannelInputOption;
+  midiChannelInputOption.on_enter = [&midiChannelToOutputStr] {
+    try {
+      m.lock();
+      midiChannelToOutput = (unsigned int)std::stoi(midiChannelToOutputStr);
+      if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
+        m.unlock();
+        calculatePitchBoardPoints();
+      }
+      m.unlock();
+    } catch (exception& e) {
+    }
+  };
+  auto midiChannelInput = ftxui::Input(&midiChannelToOutputStr, "Midi output channel", midiChannelInputOption);
+  auto midiLayout = ftxui::Container::Vertical({
+    midiMenu,
+    midiChannelInput,
+  });
+  auto midiSection = ftxui::Renderer(midiLayout, [&midiMenu, &midiChannelInput] {
+    std::unique_lock<std::mutex> lock(midiMutex);
+    return ftxui::vbox({
+        ftxui::hbox({
+          ftxui::text("Midi output port") | ftxui::bold,
+          ftxui::separator(),
+          midiMenu->Render(),
+        }),
+        ftxui::separator(),
+        ftxui::hbox({
+          ftxui::text("Currently selected") | ftxui::bold,
+          ftxui::separator(),
+          ftxui::text(midiPortMenuSelectedIndex == std::numeric_limits<int>::max() ? "[none]" : midiPortMenuEntries[midiPortMenuSelectedIndex]),
+        }),
+        ftxui::separatorDouble(),
+        ftxui::hbox({
+          ftxui::text("Midi output channel") | ftxui::bold,
+          ftxui::separator(),
+          midiChannelInput->Render(),
+        }),
+        ftxui::separator(),
+        ftxui::hbox({
+          ftxui::text("Current value") | ftxui::bold,
+          ftxui::separator(),
+          ftxui::text(std::to_string(midiChannelToOutput)),
+        }),
+      }) | ftxui::border;
+    })
+  | ftxui::Maybe([&] { return mainMenuSelectedIndex == 0; });
 
+  //##############
+  //#### nose ####
+  //##############
   auto noseCalc = ftxui::Button("Ready", [&] {
     m.lock();
     noseZeroCalibrated[0] = noseCurrentPosition[0];
@@ -449,6 +493,9 @@ void tuiRenderer() {
       })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 1; });
 
+  //###############
+  //#### mouth ####
+  //###############
   auto mouthCalc1 = ftxui::Button("Ready", [&] {
     calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
     calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
@@ -522,6 +569,9 @@ void tuiRenderer() {
       })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 4; });
 
+  //#####################
+  //#### pitch board ####
+  //#####################
   auto pitchBoardCalc1 = ftxui::Button("Ready", [&] {
     m.lock();
     nosePitchBoardUpperLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
@@ -720,9 +770,7 @@ void tuiRenderer() {
         return ftxui::vbox({
           ftxui::hbox({
             ftxui::canvas(std::move(c)) | ftxui::border,
-            ftxui::gaugeUp(mouthOpenPercentage),
           }),
-          ftxui::gaugeRight(mouthWidePercentage),
         });
       } else {
         return ftxui::text("No face detected.") | ftxui::border;
@@ -730,7 +778,7 @@ void tuiRenderer() {
     });
 
   auto componentLayout = ftxui::Container::Vertical({
-    midiMenu,
+    midiSection,
     noseCalc,
     mouthCalc1,
     mouthCalc2,
@@ -854,7 +902,7 @@ void midiDriver() {
     bool debounceIgnoreNote = false;
     if (false) {
     } else if (mouthOpen && !midiPlaying) {
-      channel = 1;
+      channel = midiChannelToOutput;
       note = midiNoteToPlay;
       velocity = round(127 * (1.0 - mouthWidePercentage));
       timePoint = std::chrono::high_resolution_clock::now();
@@ -882,7 +930,7 @@ void midiDriver() {
         debounceIgnoreNote = false;
       }
     } else if (!mouthOpen && midiPlaying) {
-      channel = 1;
+      channel = midiChannelToOutput;
       note = midiNoteToPlay;
       velocity = 127;
       for (int i = 0; i < polyphonyCacheSize; i++) {
@@ -898,6 +946,7 @@ void midiDriver() {
     for (int i = 0; i < polyphonyCacheSize; i++) {
       timePoint = std::chrono::high_resolution_clock::now();
       if (std::chrono::duration_cast<std::chrono::milliseconds>(timePoint - polyphonyCache[i].entryTime).count() > 4000) {
+        midi.send_message(libremidi::message::note_off(channel, polyphonyCache[i].note, 127));
         polyphonyCache[i].note == std::numeric_limits<int>::max();
         polyphonyCache[i].entryTime == std::chrono::high_resolution_clock::time_point::min();
       }
@@ -934,8 +983,6 @@ int main(int argc, char** argv) {
     shape_predictor sp;
     deserialize(argv[1]) >> sp;
 
-
-    // FIXME iamge_window: image_window win;
     std::vector<rectangle> faces;
     while (run.load()) {
       m.lock();
