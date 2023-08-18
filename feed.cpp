@@ -190,8 +190,7 @@ void interpretFacialData() {
     m.unlock();
   }
 }
-
-void calculatePitchBoardPoints() {
+float* intersectionOfTwoLinesGivenFourPoints(float p1[2], float p2[2], float q1[2], float q2[2]) {
   // calculate reduced row eschelon form.
   // Stolen from: https://stackoverflow.com/questions/31756413/solving-a-simple-matrix-in-row-reduced-form-in-c
   auto rowReduce = [](float A[2][3]) {
@@ -215,25 +214,26 @@ void calculatePitchBoardPoints() {
       lead++;
     }
   };
-  auto intersectionOfTwoLinesGivenFourPoints = [rowReduce](float p1[2], float p2[2], float q1[2], float q2[2]) -> float* {
-    // create matrix to represent system of equations
-    float matrix[2][3] = {
-      { (p2[0] - p1[0]) * -1, q2[0] - q1[0], p1[0] - q1[0] },
-      { (p2[1] - p1[1]) * -1, q2[1] - q1[1], p1[1] - q1[1] }
-    };
-    // convert the matrix to reduced row eschelon form
-    rowReduce(matrix);
-    // check that both solved parameters produce the same point
-    // rounding here in order to avoid idiosyncrasies from binary approx
-    if (true
-      && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
-      && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1])) {
-      return parametricLine(p1, p2, matrix[0][2]);
-    } else {
-      cerr << "WARNING: could not find coincident point of two lines." << endl;
-      return p1; // default return value
-    }
+  // create matrix to represent system of equations
+  float matrix[2][3] = {
+    { (p2[0] - p1[0]) * -1, q2[0] - q1[0], p1[0] - q1[0] },
+    { (p2[1] - p1[1]) * -1, q2[1] - q1[1], p1[1] - q1[1] }
   };
+  // convert the matrix to reduced row eschelon form
+  rowReduce(matrix);
+  // check that both solved parameters produce the same point
+  // rounding here in order to avoid idiosyncrasies from binary approx
+  if (true
+    && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
+    && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1])) {
+    return parametricLine(p1, p2, matrix[0][2]);
+  } else {
+    cerr << "WARNING: could not find coincident point of two lines." << endl;
+    return p1; // default return value
+  }
+}
+
+void calculatePitchBoardPoints() {
   m.lock();
   // allocate memory for 2D array of points, hence making a 3D array
   pitchBoardPointsAsFloats = (float***)malloc(sizeof(float**) * (pitchBoardNumberOfFrets + 1));
@@ -368,22 +368,33 @@ void calculatePitchBoardPoints() {
   m.unlock();
 }
 
-void tuiRenderer() {
-  auto calcAverage = [](int* readValue, int* assignValue, int iterations) {
-    int measurements[iterations];
-    int acc = 0;
-    for (int i = 0; i < iterations; i++) {
-      m.lock();
-      measurements[i] = *readValue;
-      m.unlock();
-      std::this_thread::sleep_for(3ms);
+// calculates average over short time. Used for measuring facial features 'fuzzily'
+void calcAverage(int* readValue, int* assignValue, int iterations) {
+  int measurements[iterations];
+  int acc = 0;
+  for (int i = 0; i < iterations; i++) {
+    if (!run.load()) {
+      break;
     }
-    for (int i = 0; i < iterations; i++) {
-      acc += measurements[i];
+    m.lock();
+    measurements[i] = *readValue;
+    m.unlock();
+    std::this_thread::sleep_for(3ms);
+  }
+  for (int i = 0; i < iterations; i++) {
+    if (!run.load()) {
+      break;
     }
-    *assignValue = acc / iterations;
-  };
+    acc += measurements[i];
+  }
+  *assignValue = acc / iterations;
+}
 
+void joinIfJoinable(std::thread* t) {
+  if (t->joinable()) { t->join(); }
+}
+
+void tuiRenderer() {
   std::vector<std::string> mainMenuEntries = {
     "Midi Setup",
     "Nose Calibration",
@@ -431,6 +442,7 @@ void tuiRenderer() {
       }
       m.unlock();
     } catch (exception& e) {
+      m.unlock();
     }
   };
   auto midiChannelInput = ftxui::Input(&midiChannelToOutputStr, "Midi output channel", midiChannelInputOption);
@@ -496,11 +508,27 @@ void tuiRenderer() {
   //###############
   //#### mouth ####
   //###############
+  std::thread thread_mouthCalc1_mouthOuterLipUpDownCurrentDistanceCalibrated;
+  std::thread thread_mouthCalc1_mouthOuterLipRightLeftClosedDistanceCalibrated;
+  std::thread thread_mouthCalc1_mouthInnerLipUpDownClosedDistanceCalibrated;
+  std::thread thread_mouthCalc1_mouthInnerLipRightLeftClosedDistanceCalibrated;
   auto mouthCalc1 = ftxui::Button("Ready", [&] {
-    calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
-    calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
-    calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownClosedDistanceCalibrated, 100);
-    calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftClosedDistanceCalibrated, 100);
+    joinIfJoinable(&thread_mouthCalc1_mouthOuterLipUpDownCurrentDistanceCalibrated);
+    thread_mouthCalc1_mouthOuterLipUpDownCurrentDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownClosedDistanceCalibrated, 100);
+    });
+    joinIfJoinable(&thread_mouthCalc1_mouthOuterLipRightLeftClosedDistanceCalibrated);
+    thread_mouthCalc1_mouthOuterLipRightLeftClosedDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftClosedDistanceCalibrated, 100);
+    });
+    joinIfJoinable(&thread_mouthCalc1_mouthInnerLipUpDownClosedDistanceCalibrated);
+    thread_mouthCalc1_mouthInnerLipUpDownClosedDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownClosedDistanceCalibrated, 100);
+    });
+    joinIfJoinable(&thread_mouthCalc1_mouthInnerLipRightLeftClosedDistanceCalibrated);
+    thread_mouthCalc1_mouthInnerLipRightLeftClosedDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftClosedDistanceCalibrated, 100);
+    });
     m.lock();
     mouthCalibrationClosedComplete = true;
     m.unlock();
@@ -527,9 +555,17 @@ void tuiRenderer() {
       })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 2; });
 
+  std::thread thread_mouthCalc2_mouthOuterLipUpDownOpenDistanceCalibrated;
+  std::thread thread_mouthCalc2_mouthInnerLipUpDownOpenDistanceCalibrated;
   auto mouthCalc2 = ftxui::Button("Ready", [&] {
-    calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
-    calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownOpenDistanceCalibrated, 100);
+    joinIfJoinable(&thread_mouthCalc2_mouthOuterLipUpDownOpenDistanceCalibrated);
+    thread_mouthCalc2_mouthOuterLipUpDownOpenDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthOuterLipUpDownCurrentDistance, &mouthOuterLipUpDownOpenDistanceCalibrated, 100);
+    });
+    joinIfJoinable(&thread_mouthCalc2_mouthInnerLipUpDownOpenDistanceCalibrated);
+    thread_mouthCalc2_mouthInnerLipUpDownOpenDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthInnerLipUpDownCurrentDistance, &mouthInnerLipUpDownOpenDistanceCalibrated, 100);
+    });
     m.lock();
     mouthCalibrationOpenUpDownComplete = true;
     m.unlock();
@@ -548,9 +584,17 @@ void tuiRenderer() {
       })
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 3; });
 
+  std::thread thread_mouthCalc3_mouthOuterLipRightLeftOpenDistanceCalibrated;
+  std::thread thread_mouthCalc3_mouthInnerLipRightLeftOpenDistanceCalibrated;
   auto mouthCalc3 = ftxui::Button("Ready", [&] {
-    calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
-    calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftOpenDistanceCalibrated, 100);
+    joinIfJoinable(&thread_mouthCalc3_mouthOuterLipRightLeftOpenDistanceCalibrated);
+    thread_mouthCalc3_mouthOuterLipRightLeftOpenDistanceCalibrated = std::thread([&]() {
+        calcAverage(&mouthOuterLipRightLeftCurrentDistance, &mouthOuterLipRightLeftOpenDistanceCalibrated, 100);
+    });
+    joinIfJoinable(&thread_mouthCalc3_mouthInnerLipRightLeftOpenDistanceCalibrated);
+    thread_mouthCalc3_mouthInnerLipRightLeftOpenDistanceCalibrated = std::thread([&]() {
+      calcAverage(&mouthInnerLipRightLeftCurrentDistance, &mouthInnerLipRightLeftOpenDistanceCalibrated, 100);
+    });
     m.lock();
     mouthCalibrationOpenRightLeftComplete = true;
     m.unlock();
@@ -718,10 +762,14 @@ void tuiRenderer() {
             for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
               c.DrawPointLine(pitchBoardPoints[0][j][0], pitchBoardPoints[0][j][1], pitchBoardPoints[pitchBoardNumberOfFrets][j][0], pitchBoardPoints[pitchBoardNumberOfFrets][j][1]);
             }
-            // FIXME: DEBUG draw all points
-            for (int i = 0; i <= pitchBoardNumberOfFrets; i++) {
-              for (int j = 0; j <= pitchBoardNumberOfStrings; j++) {
-                c.DrawPointCircleFilled(pitchBoardPoints[i][j][0], pitchBoardPoints[i][j][1], 1, ftxui::Color::Red);
+            for (int i = 0; i < pitchBoardNumberOfFrets; i++) {
+              for (int j = 0; j < pitchBoardNumberOfStrings; j++) {
+                float* centerOfTile = intersectionOfTwoLinesGivenFourPoints(
+                    pitchBoardPointsAsFloats[i][j],
+                    pitchBoardPointsAsFloats[i+1][j+1],
+                    pitchBoardPointsAsFloats[i][j+1],
+                    pitchBoardPointsAsFloats[i+1][j]);
+                c.DrawText(centerOfTile[0], centerOfTile[1], "A#", ftxui::Color::Red);
               }
             }
           }
@@ -819,6 +867,17 @@ void tuiRenderer() {
   renderer = renderer
     | ftxui::CatchEvent([&] (ftxui::Event event) {
         if (event == ftxui::Event::Character('q')) {
+          // rejoin all calibration related threads before exiting
+          joinIfJoinable(&thread_mouthCalc1_mouthOuterLipUpDownCurrentDistanceCalibrated);
+          joinIfJoinable(&thread_mouthCalc1_mouthOuterLipRightLeftClosedDistanceCalibrated);
+          joinIfJoinable(&thread_mouthCalc1_mouthInnerLipUpDownClosedDistanceCalibrated);
+          joinIfJoinable(&thread_mouthCalc1_mouthInnerLipRightLeftClosedDistanceCalibrated);
+
+          joinIfJoinable(&thread_mouthCalc2_mouthOuterLipUpDownOpenDistanceCalibrated);
+          joinIfJoinable(&thread_mouthCalc2_mouthInnerLipUpDownOpenDistanceCalibrated);
+
+          joinIfJoinable(&thread_mouthCalc3_mouthOuterLipRightLeftOpenDistanceCalibrated);
+          joinIfJoinable(&thread_mouthCalc3_mouthInnerLipRightLeftOpenDistanceCalibrated);
           run.store(false);
           screen.ExitLoopClosure()();
           return true;
@@ -1013,7 +1072,17 @@ int main(int argc, char** argv) {
         faceDetected.store(true);
         full_object_detection shape = sp(baseimg, faces[0]);
 
+        // prevent facial landmarks from being estimated outside of matrix bounds
+        auto integerWithinBounds = [](int coord, unsigned int min, unsigned int max) -> unsigned int {
+          return coord > max ? (unsigned int)max : coord < min ? (unsigned int)min : coord;
+        };
+
         m.lock();
+
+        // save the cvMatrix's size in order to know the size of our 'canvas' in calculation
+        cvMatrixWidth = cvMatrix.cols;
+        cvMatrixHeight = cvMatrix.rows;
+
         // draw out pitch board when all necessary parameters are configured
         if (true
           && nosePitchBoardUpperLeftComplete
@@ -1024,25 +1093,21 @@ int main(int argc, char** argv) {
         } else {
           // store facial parts globally to be drawn during configuration
           for (int i = 0; i < 68; i++) {
-            dlibFacialParts[i][0] = shape.part(i).x();
-            dlibFacialParts[i][1] = shape.part(i).y();
+            dlibFacialParts[i][0] = integerWithinBounds(shape.part(i).x(), (unsigned int)0, cvMatrixWidth - 1);
+            dlibFacialParts[i][1] = integerWithinBounds(shape.part(i).y(), (unsigned int)0, cvMatrixHeight - 1);
           }
         }
 
-        // save the cvMatrix's size in order to know the size of our 'canvas' in calculation
-        cvMatrixWidth = cvMatrix.cols;
-        cvMatrixHeight = cvMatrix.rows;
-
         // capture nose position
-        noseCurrentPosition[0] = shape.part(31-1).x();
-        noseCurrentPosition[1] = shape.part(31-1).y();
+        noseCurrentPosition[0] = integerWithinBounds(shape.part(31-1).x(), (unsigned int)0, cvMatrixWidth - 1);
+        noseCurrentPosition[1] = integerWithinBounds(shape.part(31-1).y(), (unsigned int)0, cvMatrixHeight - 1);
         if (noseZeroCalibrationComplete) {
           noseCurrentPositionMultiplied[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
           noseCurrentPositionMultiplied[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
         }
         // capture mouth dimensions
-        mouthOuterLipUpDownCurrentDistance = shape.part(58-1).y() - shape.part(52-1).y();
-        mouthOuterLipRightLeftCurrentDistance = shape.part(55-1).x() - shape.part(49-1).x();
+        mouthOuterLipUpDownCurrentDistance = integerWithinBounds(shape.part(58-1).y(), (unsigned int)0, cvMatrixHeight) - integerWithinBounds(shape.part(52-1).y(), (unsigned int)0, cvMatrixHeight);
+        mouthOuterLipRightLeftCurrentDistance = integerWithinBounds(shape.part(55-1).x(), (unsigned int)0, cvMatrixWidth) - integerWithinBounds(shape.part(49-1).x(), (unsigned int)0, cvMatrixWidth);
         m.unlock();
 
         // trigger render in TUI
