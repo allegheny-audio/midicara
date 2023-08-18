@@ -87,6 +87,7 @@ float*** pitchBoardPointsAsFloats;
 unsigned int*** pitchBoardPoints;
 unsigned char** pixelMidiNoteCache;
 
+std::string* midiNoteNameLookup;
 std::atomic<bool> midiPortSelected = false;
 std::atomic<bool> midiPortsPopulated = false;
 std::vector<std::string> midiPortMenuEntries;
@@ -432,7 +433,7 @@ void tuiRenderer() {
       });
   std::string midiChannelToOutputStr;
   ftxui::InputOption midiChannelInputOption;
-  midiChannelInputOption.on_enter = [&midiChannelToOutputStr] {
+  midiChannelInputOption.on_enter = [&midiChannelToOutputStr, &mainMenuSelectedIndex] {
     try {
       m.lock();
       midiChannelToOutput = (unsigned int)std::stoi(midiChannelToOutputStr);
@@ -441,6 +442,7 @@ void tuiRenderer() {
         calculatePitchBoardPoints();
       }
       m.unlock();
+      mainMenuSelectedIndex = 1;
     } catch (exception& e) {
       m.unlock();
     }
@@ -450,7 +452,7 @@ void tuiRenderer() {
     midiMenu,
     midiChannelInput,
   });
-  auto midiSection = ftxui::Renderer(midiLayout, [&midiMenu, &midiChannelInput] {
+  auto midiSection = ftxui::Renderer(midiLayout, [&midiMenu, &midiChannelInput, &mainMenuSelectedIndex] {
     std::unique_lock<std::mutex> lock(midiMutex);
     return ftxui::vbox({
         ftxui::hbox({
@@ -532,6 +534,7 @@ void tuiRenderer() {
     m.lock();
     mouthCalibrationClosedComplete = true;
     m.unlock();
+    mainMenuSelectedIndex = 3;
   });
   mouthCalc1 = mouthCalc1
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -569,6 +572,7 @@ void tuiRenderer() {
     m.lock();
     mouthCalibrationOpenUpDownComplete = true;
     m.unlock();
+    mainMenuSelectedIndex = 4;
   });
   mouthCalc2 = mouthCalc2
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -598,6 +602,7 @@ void tuiRenderer() {
     m.lock();
     mouthCalibrationOpenRightLeftComplete = true;
     m.unlock();
+    mainMenuSelectedIndex = 5;
   });
   mouthCalc3 = mouthCalc3
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -618,14 +623,15 @@ void tuiRenderer() {
   //#####################
   auto pitchBoardCalc1 = ftxui::Button("Ready", [&] {
     m.lock();
-    nosePitchBoardUpperLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-    nosePitchBoardUpperLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardUpperLeftPosition[0] = noseZeroCalibrated[0] == 0 ? noseCurrentPosition[0] : (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardUpperLeftPosition[1] = noseZeroCalibrated[1] == 0 ? noseCurrentPosition[1] : (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
     nosePitchBoardUpperLeftComplete = true;
     if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
       m.unlock();
       calculatePitchBoardPoints();
     }
     m.unlock();
+    mainMenuSelectedIndex = 6;
   });
   pitchBoardCalc1 = pitchBoardCalc1
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -643,14 +649,15 @@ void tuiRenderer() {
 
   auto pitchBoardCalc2 = ftxui::Button("Ready", [&] {
     m.lock();
-    nosePitchBoardUpperRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-    nosePitchBoardUpperRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardUpperRightPosition[0] = noseZeroCalibrated[0] == 0 ? noseCurrentPosition[0] : (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardUpperRightPosition[1] = noseZeroCalibrated[1] == 0 ? noseCurrentPosition[1] : (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
     nosePitchBoardUpperRightComplete = true;
     if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
       m.unlock();
       calculatePitchBoardPoints();
     }
     m.unlock();
+    mainMenuSelectedIndex = 7;
   });
   pitchBoardCalc2 = pitchBoardCalc2
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -667,14 +674,15 @@ void tuiRenderer() {
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 6; });
   auto pitchBoardCalc3 = ftxui::Button("Ready", [&] {
     m.lock();
-    nosePitchBoardLowerRightPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-    nosePitchBoardLowerRightPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardLowerRightPosition[0] = noseZeroCalibrated[0] == 0 ? noseCurrentPosition[0] : (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardLowerRightPosition[1] = noseZeroCalibrated[1] == 0 ? noseCurrentPosition[1] : (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
     nosePitchBoardLowerRightComplete = true;
     if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
       m.unlock();
       calculatePitchBoardPoints();
     }
     m.unlock();
+    mainMenuSelectedIndex = 8;
   });
   pitchBoardCalc3 = pitchBoardCalc3
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -691,14 +699,15 @@ void tuiRenderer() {
     | ftxui::Maybe([&] { return mainMenuSelectedIndex == 7; });
   auto pitchBoardCalc4 = ftxui::Button("Ready", [&] {
     m.lock();
-    nosePitchBoardLowerLeftPosition[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-    nosePitchBoardLowerLeftPosition[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+    nosePitchBoardLowerLeftPosition[0] = noseZeroCalibrated[0] == 0 ? noseCurrentPosition[0] : (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
+    nosePitchBoardLowerLeftPosition[1] = noseZeroCalibrated[1] == 0 ? noseCurrentPosition[1] : (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
     nosePitchBoardLowerLeftComplete = true;
     if (nosePitchBoardUpperLeftComplete && nosePitchBoardUpperRightComplete && nosePitchBoardLowerRightComplete && nosePitchBoardLowerLeftComplete && pitchBoardNumberOfFrets > 0) {
       m.unlock();
       calculatePitchBoardPoints();
     }
     m.unlock();
+    mainMenuSelectedIndex = 9;
   });
   pitchBoardCalc4 = pitchBoardCalc4
     | ftxui::Renderer([] (ftxui::Element el) {
@@ -769,7 +778,10 @@ void tuiRenderer() {
                     pitchBoardPointsAsFloats[i+1][j+1],
                     pitchBoardPointsAsFloats[i][j+1],
                     pitchBoardPointsAsFloats[i+1][j]);
-                c.DrawText(centerOfTile[0], centerOfTile[1], "A#", ftxui::Color::Red);
+                // perform lookup of midi note name and paste it into fret for viewing
+                unsigned char midiNote = pixelMidiNoteCache[(int)floor(centerOfTile[0])][(int)floor(centerOfTile[1])];
+                std::string noteText = midiNoteNameLookup[midiNote];
+                c.DrawText(centerOfTile[0], centerOfTile[1], noteText, ftxui::Color::GrayDark);
               }
             }
           }
@@ -898,6 +910,12 @@ void tuiRenderer() {
 }
 
 void midiDriver() {
+  // initialize lookup of midi not string names (e.g. "A#", "B")
+  midiNoteNameLookup = (std::string*)malloc(sizeof(std::string) * 128);
+  for (int i = 0; i < 128; i++) {
+    std::vector<std::string> noteNames = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    midiNoteNameLookup[i] = noteNames.at(i % 12);
+  }
   // initialize polyphonyCache variable
   polyphonyCache = new polyphonyCacheItem[polyphonyCacheSize];
   // https://www.inspiredacoustics.com/en/MIDI_note_numbers_and_center_frequencies
@@ -1108,6 +1126,8 @@ int main(int argc, char** argv) {
         // capture mouth dimensions
         mouthOuterLipUpDownCurrentDistance = integerWithinBounds(shape.part(58-1).y(), (unsigned int)0, cvMatrixHeight) - integerWithinBounds(shape.part(52-1).y(), (unsigned int)0, cvMatrixHeight);
         mouthOuterLipRightLeftCurrentDistance = integerWithinBounds(shape.part(55-1).x(), (unsigned int)0, cvMatrixWidth) - integerWithinBounds(shape.part(49-1).x(), (unsigned int)0, cvMatrixWidth);
+        mouthInnerLipUpDownCurrentDistance = integerWithinBounds(shape.part(67-1).y(), (unsigned int)0, cvMatrixHeight) - integerWithinBounds(shape.part(63-1).y(), (unsigned int)0, cvMatrixHeight);
+        mouthInnerLipRightLeftCurrentDistance = integerWithinBounds(shape.part(65-1).x(), (unsigned int)0, cvMatrixWidth) - integerWithinBounds(shape.part(61-1).x(), (unsigned int)0, cvMatrixWidth);
         m.unlock();
 
         // trigger render in TUI
