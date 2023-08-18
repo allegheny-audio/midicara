@@ -1120,8 +1120,8 @@ int main(int argc, char** argv) {
         noseCurrentPosition[0] = integerWithinBounds(shape.part(31-1).x(), (unsigned int)0, cvMatrixWidth - 1);
         noseCurrentPosition[1] = integerWithinBounds(shape.part(31-1).y(), (unsigned int)0, cvMatrixHeight - 1);
         if (noseZeroCalibrationComplete) {
-          noseCurrentPositionMultiplied[0] = (noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0];
-          noseCurrentPositionMultiplied[1] = (noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1];
+          noseCurrentPositionMultiplied[0] = integerWithinBounds((noseCurrentPosition[0] - noseZeroCalibrated[0]) * noseSensitivity + noseZeroCalibrated[0], (unsigned int)0, cvMatrixWidth - 1);
+          noseCurrentPositionMultiplied[1] = integerWithinBounds((noseCurrentPosition[1] - noseZeroCalibrated[1]) * noseSensitivity + noseZeroCalibrated[1], (unsigned int)0, cvMatrixHeight - 1);
         }
         // capture mouth dimensions
         mouthOuterLipUpDownCurrentDistance = integerWithinBounds(shape.part(58-1).y(), (unsigned int)0, cvMatrixHeight) - integerWithinBounds(shape.part(52-1).y(), (unsigned int)0, cvMatrixHeight);
