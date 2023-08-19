@@ -195,24 +195,32 @@ float* intersectionOfTwoLinesGivenFourPoints(float p1[2], float p2[2], float q1[
   // calculate reduced row eschelon form.
   // Stolen from: https://stackoverflow.com/questions/31756413/solving-a-simple-matrix-in-row-reduced-form-in-c
   auto rowReduce = [](float A[2][3]) {
-    float res[2][3];
-    const int nrows = 2;
-    const int ncols = 3;
-    int lead = 0; 
-    while (lead < nrows) {
-      float d, m;
-      for (int r = 0; r < nrows; r++) { // for each row ...
-        /* calculate divisor and multiplier */
-        d = A[lead][lead];
-        m = A[r][lead] / A[lead][lead];
-        for (int c = 0; c < ncols; c++) { // for each column ...
-          if (r == lead)
-            A[r][c] /= d;               // make pivot = 1
-          else
-            A[r][c] -= A[lead][c] * m;  // make other = 0
+    for (int i = 0; i < 2; ++i) {
+      // Shuffle rows if pivot element is zero
+      if (A[i][i] == 0) {
+        for (int j = i + 1; j < 2; ++j) {
+          if (A[j][i] != 0) {
+            std::swap_ranges(A[i], A[i] + 3, A[j]);
+            break;
+          }
         }
       }
-      lead++;
+
+      // Make the diagonal element 1
+      float divisor = A[i][i];
+      for (int j = 0; j < 3; ++j) {
+        A[i][j] /= divisor;
+      }
+
+      // Eliminate other rows
+      for (int k = 0; k < 2; ++k) {
+        if (k != i) {
+          float factor = A[k][i];
+          for (int j = 0; j < 3; ++j) {
+            A[k][j] -= factor * A[i][j];
+          }
+        }
+      }
     }
   };
   // create matrix to represent system of equations
@@ -224,12 +232,18 @@ float* intersectionOfTwoLinesGivenFourPoints(float p1[2], float p2[2], float q1[
   rowReduce(matrix);
   // check that both solved parameters produce the same point
   // rounding here in order to avoid idiosyncrasies from binary approx
-  if (true
+  const bool checkOutput = true;
+  if (!checkOutput || (true
     && round(parametricLine(p1, p2, matrix[0][2])[0]) == round(parametricLine(q1, q2, matrix[1][2])[0])
-    && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1])) {
+    && round(parametricLine(p1, p2, matrix[0][2])[1]) == round(parametricLine(q1, q2, matrix[1][2])[1]))) {
     return parametricLine(p1, p2, matrix[0][2]);
-  } else {
+  }
+  else {
     cerr << "WARNING: could not find coincident point of two lines." << endl;
+    cerr << "p1: (" << std::to_string(p1[0]) << ", " << std::to_string(p1[1]) << ")" << endl;
+    cerr << "p2: (" << std::to_string(p2[0]) << ", " << std::to_string(p2[1]) << ")" << endl;
+    cerr << "q1: (" << std::to_string(q1[0]) << ", " << std::to_string(q1[1]) << ")" << endl;
+    cerr << "q2: (" << std::to_string(q2[0]) << ", " << std::to_string(q2[1]) << ")" << endl;
     return p1; // default return value
   }
 }
