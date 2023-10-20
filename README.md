@@ -53,3 +53,14 @@ Now that you are ready to run, you may invoke the executable:
 ```
 
 A terminal interface will appear with various steps of configuration available.
+
+# References
+
+* [1] Alves-Pinto, Ana, et al. "The case for musical instrument training in cerebral palsy for neurorehabilitation." Neural plasticity 2016 (2016).
+* [2] Bradski, G. "The OpenCV Library." Dr. Dobb's Journal of Software Tools, vol. 4, 2000, pp. N/A.
+* [3] Frid, Emma. "Accessible digital musical instruments—a review of musical interfaces in inclusive music practice." Multimodal Technologies and Interaction 3.3 (2019): 57.
+* [4] “Hands Free, Breath-Powered Instrument - Music for All.” Jamboxx, 12 Dec. 2019, www.jamboxx.com/. 
+* [5] Davis E. King. Dlib-ml: A Machine Learning Toolkit. Journal of Machine Learning Research 10, pp. 1755-1758, 2009.
+* [6] Lyons, Michael J., Michael Haehnel, and Nobuji Tetsutani. "The mouthesizer: a facial gesture musical interface." Conference Abstracts, Siggraph 2001. Vol. 230. 2001.
+* [7] Krägeloh-Mann, Ingeborg, and Christine Cans. "Cerebral palsy update." Brain and development 31.7 (2009): 537-544.
+* [8] Sagonas, Christos, et al. "A semi-automatic methodology for facial landmark annotation." Proceedings of the IEEE conference on computer vision and pattern recognition workshops. 2013.
