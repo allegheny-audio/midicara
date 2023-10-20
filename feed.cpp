@@ -100,7 +100,7 @@ float mouthWidePercentage;
 unsigned int midiNoteToPlay;
 unsigned int noseDistanceMagnitude;
 
-unsigned int polyphonyCacheSize = 6;
+unsigned int polyphonyCacheSize = 12;
 struct polyphonyCacheItem {
   unsigned int note;
   std::chrono::high_resolution_clock::time_point entryTime;
@@ -963,17 +963,25 @@ void midiDriver() {
   std::this_thread::sleep_for(1200ms);
   midi.send_message(libremidi::message::note_on((uint8_t)1, (uint8_t)74, (uint8_t)55));
   std::this_thread::sleep_for(1200ms);
+
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)48, (uint8_t)70));
+  std::this_thread::sleep_for(10ms);
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)52, (uint8_t)70));
+  std::this_thread::sleep_for(10ms);
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)55, (uint8_t)70));
+  std::this_thread::sleep_for(10ms);
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)59, (uint8_t)70));
+  std::this_thread::sleep_for(10ms);
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)78, (uint8_t)70));
+  std::this_thread::sleep_for(10ms);
   midi.send_message(libremidi::message::note_off((uint8_t)1, (uint8_t)74, (uint8_t)55));
+  std::this_thread::sleep_for(10ms);
   uint8_t channel;
   uint8_t note;
   uint8_t velocity;
   std::chrono::high_resolution_clock::time_point timePoint;
   unsigned int polyphonyCacheIndex = 0;
+  // spinlock until facial data is available
   while (run.load()) {
     m.lock();
     if (true
@@ -1012,7 +1020,15 @@ void midiDriver() {
           break;
         }
       }
+      // play note (assuming it is not already playing)
       if (!debounceIgnoreNote) {
+        // if there is an unterminated note about to be overwritten,
+        // send an off signal before overwriting it in the cache
+        if (polyphonyCache[polyphonyCacheIndex].note != std::numeric_limits<int>::max()) {
+          midi.send_message(libremidi::message::note_off(channel, note, velocity));
+          polyphonyCache[polyphonyCacheIndex].note = std::numeric_limits<int>::max();
+          polyphonyCache[polyphonyCacheIndex].entryTime = std::chrono::high_resolution_clock::time_point::min();
+        }
         polyphonyCache[polyphonyCacheIndex].note = note;
         polyphonyCache[polyphonyCacheIndex].entryTime = timePoint;
         midi.send_message(libremidi::message::note_on(channel, note, velocity));
@@ -1027,19 +1043,23 @@ void midiDriver() {
       for (int i = 0; i < polyphonyCacheSize; i++) {
         if (polyphonyCache[i].note == note) {
           // remove note; we stop playing it
+          midi.send_message(libremidi::message::note_off(channel, note, velocity));
           polyphonyCache[i].note = std::numeric_limits<int>::max();
           polyphonyCache[i].entryTime = std::chrono::high_resolution_clock::time_point::min();
         }
       }
-      midi.send_message(libremidi::message::note_off(channel, note, velocity));
       midiPlaying = false;
     }
+    // send note_off for notes that were not manually terminated
+    // only triggers once note has been held for long enough
     for (int i = 0; i < polyphonyCacheSize; i++) {
       timePoint = std::chrono::high_resolution_clock::now();
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(timePoint - polyphonyCache[i].entryTime).count() > 4000) {
+      if (std::chrono::duration_cast<std::chrono::milliseconds>(timePoint - polyphonyCache[i].entryTime).count() > 4000
+          && polyphonyCache[i].note != std::numeric_limits<int>::max()
+          && polyphonyCache[i].note != 0) {
         midi.send_message(libremidi::message::note_off(channel, polyphonyCache[i].note, 127));
-        polyphonyCache[i].note == std::numeric_limits<int>::max();
-        polyphonyCache[i].entryTime == std::chrono::high_resolution_clock::time_point::min();
+        polyphonyCache[i].note = std::numeric_limits<int>::max();
+        polyphonyCache[i].entryTime = std::chrono::high_resolution_clock::time_point::min();
       }
     }
     midiMutex.unlock();
